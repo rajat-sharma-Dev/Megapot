@@ -1,0 +1,36 @@
+{
+  "name": "rally-vault",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "verify:megapot": "tsx scripts/verify-megapot.ts",
+    "test:engine": "tsx scripts/test-engine.ts",
+    "test:e2e": "next build && tsx scripts/test-e2e.ts",
+    "test": "npm run test:engine && npm run test:e2e"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "next": "15.5.23",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "server-only": "^0.0.1",
+    "viem": "^2.55.11",
+    "wagmi": "^3.7.6"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.23",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.11",
+    "typescript": "^5"
+  }
+}

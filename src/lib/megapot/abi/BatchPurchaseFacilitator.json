@@ -1,0 +1,845 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_jackpot",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_usdc",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "_minimumTicketCount",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "ActiveBatchOrderExists",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AllowedAlreadyAdded",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AllowedNotFound",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "EmptyArray",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidMinimumTicketCount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidNormalBallCount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidReferralSplitBps",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidStaticTicket",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidTicketCount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "JackpotLocked",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "JackpotNotInitialized",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoActiveBatchOrder",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotAllowed",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      }
+    ],
+    "name": "OwnableInvalidOwner",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "OwnableUnauthorizedAccount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReentrancyGuardReentrantCall",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReferralSplitLengthMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReferralSplitSumInvalid",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "RepeatedNormalBall",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "SafeERC20FailedOperation",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TooManyReferrers",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ZeroAddress",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "allowed",
+        "type": "address"
+      }
+    ],
+    "name": "AllowedAdded",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "allowed",
+        "type": "address"
+      }
+    ],
+    "name": "AllowedRemoved",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "enum BatchPurchaseFacilitator.ExecutionAction",
+        "name": "executionAction",
+        "type": "uint8"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "refundAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "BatchOrderCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "payer",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "drawingId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "totalCost",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "dynamicTicketCount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "staticTicketCount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "source",
+        "type": "bytes32"
+      }
+    ],
+    "name": "BatchOrderCreated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "drawingId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256[]",
+        "name": "ticketIds",
+        "type": "uint256[]"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "ticketsExecuted",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "remainingTickets",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "remainingUSDC",
+        "type": "uint256"
+      }
+    ],
+    "name": "BatchOrderExecuted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      }
+    ],
+    "name": "BatchOrderRemoved",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "previousOwner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "newOwner",
+        "type": "address"
+      }
+    ],
+    "name": "OwnershipTransferStarted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "previousOwner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "newOwner",
+        "type": "address"
+      }
+    ],
+    "name": "OwnershipTransferred",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint8[]",
+        "name": "normals",
+        "type": "uint8[]"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint8",
+        "name": "bonusball",
+        "type": "uint8"
+      }
+    ],
+    "name": "StaticTicketAdded",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint8[]",
+        "name": "normals",
+        "type": "uint8[]"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint8",
+        "name": "bonusball",
+        "type": "uint8"
+      }
+    ],
+    "name": "StaticTicketValidated",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "acceptOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_allowed",
+        "type": "address"
+      }
+    ],
+    "name": "addAllowed",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address[]",
+        "name": "_allowed",
+        "type": "address[]"
+      }
+    ],
+    "name": "addAllowedBatch",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "batchOrders",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "orderDrawingId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint64",
+        "name": "remainingUSDC",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint64",
+        "name": "remainingTickets",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint64",
+        "name": "totalTicketsOrdered",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint64",
+        "name": "dynamicTicketCount",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "cancelBatchOrder",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint64",
+        "name": "_dynamicTicketCount",
+        "type": "uint64"
+      },
+      {
+        "components": [
+          {
+            "internalType": "uint8[]",
+            "name": "normals",
+            "type": "uint8[]"
+          },
+          {
+            "internalType": "uint8",
+            "name": "bonusball",
+            "type": "uint8"
+          }
+        ],
+        "internalType": "struct IJackpot.Ticket[]",
+        "name": "_userStaticTickets",
+        "type": "tuple[]"
+      },
+      {
+        "internalType": "address[]",
+        "name": "_referrers",
+        "type": "address[]"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "_referralSplit",
+        "type": "uint256[]"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "_source",
+        "type": "bytes32"
+      }
+    ],
+    "name": "createBatchOrder",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "_maxTicketsPerBatch",
+        "type": "uint256"
+      }
+    ],
+    "name": "executeBatchOrder",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "executionNonce",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getAllowed",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "",
+        "type": "address[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address[]",
+        "name": "_recipients",
+        "type": "address[]"
+      },
+      {
+        "internalType": "uint256",
+        "name": "_maxTicketsPerBatch",
+        "type": "uint256"
+      }
+    ],
+    "name": "getBatchOrderActions",
+    "outputs": [
+      {
+        "internalType": "enum BatchPurchaseFacilitator.ExecutionAction[]",
+        "name": "",
+        "type": "uint8[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_recipient",
+        "type": "address"
+      }
+    ],
+    "name": "getBatchOrderInfo",
+    "outputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "internalType": "uint256",
+                "name": "orderDrawingId",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint64",
+                "name": "remainingUSDC",
+                "type": "uint64"
+              },
+              {
+                "internalType": "uint64",
+                "name": "remainingTickets",
+                "type": "uint64"
+              },
+              {
+                "internalType": "uint64",
+                "name": "totalTicketsOrdered",
+                "type": "uint64"
+              },
+              {
+                "internalType": "uint64",
+                "name": "dynamicTicketCount",
+                "type": "uint64"
+              },
+              {
+                "internalType": "address[]",
+                "name": "referrers",
+                "type": "address[]"
+              },
+              {
+                "internalType": "uint256[]",
+                "name": "referralSplit",
+                "type": "uint256[]"
+              }
+            ],
+            "internalType": "struct IBatchPurchaseFacilitator.BatchOrder",
+            "name": "batchOrder",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "internalType": "uint8[]",
+                "name": "normals",
+                "type": "uint8[]"
+              },
+              {
+                "internalType": "uint8",
+                "name": "bonusball",
+                "type": "uint8"
+              }
+            ],
+            "internalType": "struct IJackpot.Ticket[]",
+            "name": "staticTickets",
+            "type": "tuple[]"
+          }
+        ],
+        "internalType": "struct IBatchPurchaseFacilitator.BatchOrderInfo",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_recipient",
+        "type": "address"
+      }
+    ],
+    "name": "hasActiveBatchOrder",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_allowed",
+        "type": "address"
+      }
+    ],
+    "name": "isAllowed",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "jackpot",
+    "outputs": [
+      {
+        "internalType": "contract IJackpot",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "minimumTicketCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "owner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "pendingOwner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_allowed",
+        "type": "address"
+      }
+    ],
+    "name": "removeAllowed",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "renounceOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "_minimumTicketCount",
+        "type": "uint256"
+      }
+    ],
+    "name": "setMinimumTicketCount",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "staticTickets",
+    "outputs": [
+      {
+        "internalType": "uint8",
+        "name": "bonusball",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "newOwner",
+        "type": "address"
+      }
+    ],
+    "name": "transferOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "usdc",
+    "outputs": [
+      {
+        "internalType": "contract IERC20",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]

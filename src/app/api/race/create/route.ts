@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { getCurrentDrawing } from '@/lib/megapot/drawing';
-import { getOrCreatePlayer, createRace, getOrbRollover } from '@/lib/db/store';
+import { createRace, getOrbRollover } from '@/lib/db/store';
 import { buildRacerSlots } from '@/lib/game/replay';
+import { chargeEntry, settleDueDays, entryFeeUnits } from '@/lib/vault/ladder';
+import { dayWindow } from '@/lib/vault/day';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,9 +14,9 @@ const isAddress = (a: unknown): a is string =>
 /**
  * Issue a race.
  *
- * The seed is generated server-side and stored, so the client cannot pick a
- * track it has already practised, and the submitted result must replay against
- * this exact seed to count.
+ * Charges the entry fee into today's pool, then generates a seed server-side and
+ * stores it — so the client cannot pick a track it has already practised, and the
+ * submitted result must replay against this exact seed to count.
  */
 export async function POST(req: Request) {
   try {
@@ -25,11 +27,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: 'A valid wallet address is required' }, { status: 400 });
     }
 
-    const player = await getOrCreatePlayer(address, name);
+    // Anyone arriving after 17:00 UTC pays out yesterday before playing today.
+    await settleDueDays();
 
-    // Ball ranges come from the live drawing and are stamped onto the race, so
-    // the track's Shard numbers are valid for the drawing they'll be bought into.
     const drawing = await getCurrentDrawing();
+    const entry = await chargeEntry(address, typeof name === 'string' ? name : undefined, drawing.ticketPrice);
 
     const raceId = randomBytes(12).toString('hex');
     const seed = randomBytes(4).readUInt32BE(0);
@@ -38,29 +40,39 @@ export async function POST(req: Request) {
     await createRace({
       id: raceId,
       seed,
-      playerId: player.id,
-      ballMax: drawing.ballMax,
-      bonusballMax: drawing.bonusballMax,
+      playerId: entry.player.id,
+      entryFeeUnits: entry.entryFeeUnits.toString(),
+      dayKey: entry.dayKey,
       rolloverCount,
     });
+
+    const win = dayWindow();
 
     return NextResponse.json({
       ok: true,
       raceId,
       seed,
-      ballMax: drawing.ballMax,
-      bonusballMax: drawing.bonusballMax,
       rolloverCount,
+      slots: buildRacerSlots(raceId, entry.player.name),
+      entry: {
+        feeUnits: entry.entryFeeUnits.toString(),
+        creditsAfter: entry.creditsAfter.toString(),
+        poolUnits: entry.poolUnits.toString(),
+        ticketPriceUnits: drawing.ticketPrice.toString(),
+        entriesPerTicket: Number(drawing.ticketPrice / entryFeeUnits(drawing.ticketPrice)),
+      },
+      day: { key: entry.dayKey, closesAt: win.closesAt },
       drawingId: drawing.drawingId.toString(),
-      slots: buildRacerSlots(raceId, player.name),
       player: {
-        id: player.id,
-        name: player.name,
-        pointBank: player.pointBank,
-        cookiePieces: player.cookiePieces,
+        id: entry.player.id,
+        name: entry.player.name,
+        credits: entry.creditsAfter.toString(),
       },
     });
   } catch (err) {
-    return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
+    const msg = (err as Error).message;
+    // Out of credits is the player's problem to solve, not a server fault.
+    const status = msg.includes('Not enough credits') ? 402 : 500;
+    return NextResponse.json({ ok: false, error: msg }, { status });
   }
 }

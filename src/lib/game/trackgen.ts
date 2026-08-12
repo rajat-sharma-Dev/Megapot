@@ -5,36 +5,56 @@
  * issues the seed; nothing about the track itself is transmitted.
  */
 
-import { TRACK_WIDTH, type Shard, type Track, type OrbSpawn } from './types';
+import {
+  TRACK_WIDTH,
+  CELL_VALUE,
+  TRAP_COST,
+  FUEL_CAN_VALUE,
+  type Pickup,
+  type Track,
+  type OrbSpawn,
+} from './types';
 import { SECTION_TEMPLATES, buildSection } from './sections';
 import { makeRng, randInt, randRange, shuffle, subSeed } from './rng';
-import { generateShardNumbers, generateOrbBonusball, NORMALS_PER_TICKET } from '../megapot/numbers';
 
 export const SECTIONS_MIN = 5;
 export const SECTIONS_MAX = 6;
-export const SHARDS_MIN = 6;
-export const SHARDS_MAX = 8;
-/** Fraction of races that spawn a Golden Orb. */
+
+export const CELLS_MIN = 7;
+export const CELLS_MAX = 10;
+
+/**
+ * Fuel is deliberately abundant.
+ *
+ * Boost is the answer to a bad hit, so the answer has to be reachable — if fuel
+ * were scarce, a racer who got clipped early would spend the rest of the track
+ * unable to do anything about it, which is the exact failure this system exists
+ * to fix. Cans are spread one per slice of the track so there is always one
+ * within a few seconds' reach; being able to *route* to them is the skill.
+ */
+export const FUEL_CANS_MIN = 13;
+export const FUEL_CANS_MAX = 18;
+
+/** Traps look like point cells and cost points. At most a couple per race. */
+export const TRAPS_MIN = 0;
+export const TRAPS_MAX = 2;
+
+/** Fraction of races that spawn a Jackpot Orb. */
 export const ORB_SPAWN_CHANCE = 0.4;
 /** Lead-in and run-out so racers aren't hit at the spawn line or the tape. */
 export const START_PAD = 700;
 export const END_PAD = 500;
 
+/** Keep pickups off the extreme edges so they're always reachable. */
+const EDGE_MARGIN = 150;
+
 export type GenerateTrackOpts = {
   seed: number;
-  /** From getDrawingState — never hardcode these. */
-  ballMax: number;
-  bonusballMax: number;
   /** Force orb presence (used by tests and the tutorial race). */
   forceOrb?: boolean;
 };
 
-export function generateTrack({
-  seed,
-  ballMax,
-  bonusballMax,
-  forceOrb,
-}: GenerateTrackOpts): Track {
+export function generateTrack({ seed, forceOrb }: GenerateTrackOpts): Track {
   const rng = makeRng(seed);
   let idCounter = 0;
   const nextId = () => idCounter++;
@@ -56,70 +76,86 @@ export function generateTrack({
   // Steal Zones sit on section boundaries — visible, readable overtake points.
   const stealZones = sections.slice(1).map((s) => s.startY);
 
-  const shards = placeShards(subSeed(seed, 101), sections, ballMax);
-  const orb = placeOrb(subSeed(seed, 202), sections, length, bonusballMax, forceOrb);
+  const pickups = placePickups(subSeed(seed, 101), sections, length);
+  const orb = placeOrb(subSeed(seed, 202), sections, length, forceOrb);
 
-  return { seed, length, sections, obstacles, shards, stealZones, orb, ballMax, bonusballMax };
+  return { seed, length, sections, obstacles, pickups, stealZones, orb };
 }
 
 /**
- * Shards carry the numbers that become the player's ticket. The set is
- * guaranteed to contain at least 5 distinct values, so a perfect run always
- * yields a fully-earned ticket.
+ * Scatter the three pickup types down the track.
+ *
+ * Point cells and traps are placed within sections (where the obstacles are, so
+ * grabbing them means threading something). Fuel cans are placed on an even
+ * ladder from the first section to the run-out, so the comeback option is always
+ * somewhere ahead of you rather than clustered by luck.
  */
-function placeShards(
+function placePickups(
   seed: number,
   sections: Track['sections'],
-  ballMax: number,
-): Shard[] {
+  length: number,
+): Pickup[] {
   const rng = makeRng(seed);
-  const count = randInt(rng, SHARDS_MIN, SHARDS_MAX);
-  const numbers = generateShardNumbers(count, ballMax, rng);
+  let id = 0;
+  const pickups: Pickup[] = [];
 
-  // At most one Score Trap per race: a shard duplicating a number placed earlier,
-  // so grabbing it burns a pick slot rather than gaining one.
-  //
-  // The trap may only overwrite a number that is ALREADY duplicated elsewhere on
-  // the track. Overwriting a unique value would destroy the guarantee that every
-  // track offers five distinct numbers, and a player could then be denied a full
-  // ticket through no fault of their own.
-  let trapIndex = -1;
-  if (count > NORMALS_PER_TICKET) {
-    const freq = new Map<number, number>();
-    for (const n of numbers) freq.set(n, (freq.get(n) ?? 0) + 1);
+  const bodyStart = sections[0].startY;
+  const bodyEnd = sections[sections.length - 1].startY + sections[sections.length - 1].length;
+  const randX = () => randRange(rng, EDGE_MARGIN, TRACK_WIDTH - EDGE_MARGIN);
 
-    const safeIndices = numbers
-      .map((n, i) => ({ n, i }))
-      .filter(({ n, i }) => i > 0 && (freq.get(n) ?? 0) > 1);
-
-    if (safeIndices.length > 0) {
-      trapIndex = safeIndices[randInt(rng, 0, safeIndices.length - 1)].i;
-      numbers[trapIndex] = numbers[randInt(rng, 0, trapIndex - 1)];
-    }
-  }
-
-  const shards: Shard[] = [];
-  for (let i = 0; i < count; i++) {
-    // Spread shards evenly down the track, jittered within their slice.
-    const section = sections[Math.min(sections.length - 1, Math.floor((i / count) * sections.length))];
-    const t = randRange(rng, 0.15, 0.85);
-    shards.push({
-      id: i,
-      x: randRange(rng, 170, TRACK_WIDTH - 170),
-      y: section.startY + section.length * t,
-      number: numbers[i],
-      isTrap: i === trapIndex,
+  // ── Point cells ─────────────────────────────────────────────────────────
+  const cellCount = randInt(rng, CELLS_MIN, CELLS_MAX);
+  for (let i = 0; i < cellCount; i++) {
+    const section = sections[Math.min(sections.length - 1, Math.floor((i / cellCount) * sections.length))];
+    pickups.push({
+      id: id++,
+      kind: 'cell',
+      x: randX(),
+      y: section.startY + section.length * randRange(rng, 0.15, 0.85),
+      value: CELL_VALUE,
     });
   }
-  return shards.sort((a, b) => a.y - b.y);
+
+  // ── Traps ───────────────────────────────────────────────────────────────
+  const trapCount = randInt(rng, TRAPS_MIN, TRAPS_MAX);
+  for (let i = 0; i < trapCount; i++) {
+    const section = sections[randInt(rng, 0, sections.length - 1)];
+    pickups.push({
+      id: id++,
+      kind: 'trap',
+      x: randX(),
+      y: section.startY + section.length * randRange(rng, 0.2, 0.8),
+      value: TRAP_COST,
+    });
+  }
+
+  // ── Fuel cans ───────────────────────────────────────────────────────────
+  // One per even slice of the racing body, jittered inside its own slice so the
+  // spacing stays varied without ever leaving a long dry stretch.
+  const canCount = randInt(rng, FUEL_CANS_MIN, FUEL_CANS_MAX);
+  const slice = (bodyEnd - bodyStart) / canCount;
+  for (let i = 0; i < canCount; i++) {
+    // Jitter is kept inside the middle half of each slice. At the full 0.15–0.85
+    // range two neighbours could land 1.7 slices apart, which on a ~9,800-unit
+    // track opened 15-second stretches with no fuel in them — long enough that a
+    // player who spent their tank had no way back into the race.
+    pickups.push({
+      id: id++,
+      kind: 'fuel',
+      x: randX(),
+      y: Math.min(length - 120, bodyStart + slice * (i + randRange(rng, 0.25, 0.75))),
+      value: FUEL_CAN_VALUE,
+    });
+  }
+
+  return pickups.sort((a, b) => a.y - b.y);
 }
 
-/** The Golden Orb: random section, random moment, carries the bonusball. */
+/** The Jackpot Orb: random section, random moment, one claimant, big points. */
 function placeOrb(
   seed: number,
   sections: Track['sections'],
   length: number,
-  bonusballMax: number,
   force?: boolean,
 ): OrbSpawn | null {
   const rng = makeRng(seed);
@@ -135,7 +171,6 @@ function placeOrb(
     y,
     // Roughly proportional to how far down the track it sits.
     activateAt: (y / length) * randRange(rng, 30, 45),
-    bonusball: generateOrbBonusball(bonusballMax, rng),
   };
 }
 

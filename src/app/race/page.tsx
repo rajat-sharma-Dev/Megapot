@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useWallet } from '@/lib/wallet/useWallet';
-import { useJackpot } from '@/lib/hooks';
+import { useJackpot, usePlayer } from '@/lib/hooks';
 import { Nav } from '@/components/Nav';
 import { RaceView } from '@/components/race/RaceView';
 import { Results, type SettlementPayload } from '@/components/race/Results';
+import { DayCountdown } from '@/components/DrawCountdown';
 import { buildRacerSlots } from '@/lib/game/replay';
+import { formatUsdc } from '@/lib/format';
 import type { InputLog } from '@/lib/game/replay';
 
 type Phase = 'lobby' | 'racing' | 'submitting' | 'results';
@@ -14,14 +16,13 @@ type Phase = 'lobby' | 'racing' | 'submitting' | 'results';
 type RaceSession = {
   raceId: string;
   seed: number;
-  ballMax: number;
-  bonusballMax: number;
   rolloverCount: number;
 };
 
 export default function RacePage() {
   const wallet = useWallet();
   const { jackpot } = useJackpot(60_000);
+  const { profile, refresh } = usePlayer(wallet.address);
 
   const [phase, setPhase] = useState<Phase>('lobby');
   const [session, setSession] = useState<RaceSession | null>(null);
@@ -49,8 +50,6 @@ export default function RacePage() {
       setSession({
         raceId: json.raceId,
         seed: json.seed,
-        ballMax: json.ballMax,
-        bonusballMax: json.bonusballMax,
         rolloverCount: json.rolloverCount,
       });
       setResult(null);
@@ -77,12 +76,13 @@ export default function RacePage() {
         if (!json.ok) throw new Error(json.error ?? 'Could not score the race');
         setResult(json as SettlementPayload);
         setPhase('results');
+        refresh();
       } catch (e) {
         setError((e as Error).message);
         setPhase('lobby');
       }
     },
-    [session, wallet.address],
+    [session, wallet.address, refresh],
   );
 
   return (
@@ -106,8 +106,12 @@ export default function RacePage() {
             onStart={startRace}
             playerName={wallet.name}
             setName={wallet.setName}
-            ballMax={jackpot?.ballMax}
-            bonusballMax={jackpot?.bonusballMax}
+            entriesLeft={profile?.credits.entriesAffordable ?? null}
+            entryFeeUnits={profile?.credits.entryFeeUnits ?? null}
+            rank={profile?.today.rank ?? null}
+            dayPoints={profile?.today.points ?? 0}
+            projected={profile?.today.projectedTickets ?? 0}
+            closesAt={profile?.today.closesAt}
           />
         )}
 
@@ -115,9 +119,8 @@ export default function RacePage() {
           <RaceView
             raceId={session.raceId}
             seed={session.seed}
-            ballMax={session.ballMax}
-            bonusballMax={session.bonusballMax}
             humanName={wallet.name}
+            rolloverCount={session.rolloverCount}
             onFinish={onFinish}
           />
         )}
@@ -128,7 +131,7 @@ export default function RacePage() {
             <div className="text-center">
               <p className="font-semibold text-slate-200">Verifying your run…</p>
               <p className="mt-1 text-sm text-slate-500">
-                Replaying the race server-side and checking your Point Bank.
+                Replaying the race server-side to score it.
               </p>
             </div>
           </div>
@@ -138,6 +141,7 @@ export default function RacePage() {
           <Results
             data={result}
             explorerBase={explorerBase}
+            entriesLeft={profile?.credits.entriesAffordable ?? null}
             onRaceAgain={() => {
               setPhase('lobby');
               setSession(null);
@@ -156,16 +160,24 @@ function Lobby({
   onStart,
   playerName,
   setName,
-  ballMax,
-  bonusballMax,
+  entriesLeft,
+  entryFeeUnits,
+  rank,
+  dayPoints,
+  projected,
+  closesAt,
 }: {
   ready: boolean;
   creating: boolean;
   onStart: () => void;
   playerName: string;
   setName: (n: string) => void;
-  ballMax?: number;
-  bonusballMax?: number;
+  entriesLeft: number | null;
+  entryFeeUnits: string | null;
+  rank: number | null;
+  dayPoints: number;
+  projected: number;
+  closesAt?: string;
 }) {
   const [slots, setSlots] = useState<ReturnType<typeof buildRacerSlots>>([]);
 
@@ -174,9 +186,11 @@ function Lobby({
     setSlots(buildRacerSlots('preview-lobby', playerName));
   }, [playerName]);
 
+  const broke = entriesLeft !== null && entriesLeft <= 0;
+
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-6 text-center">
+      <div className="mb-6 text-center rise">
         <h1
           className="text-3xl font-extrabold tracking-tight sm:text-4xl"
           style={{ fontFamily: 'var(--font-display)' }}
@@ -184,12 +198,31 @@ function Lobby({
           Ready up
         </h1>
         <p className="mt-2 text-slate-400">
-          Five racers. A track nobody has seen. {ballMax ? `Shards carry 1–${ballMax}, the Orb carries 1–${bonusballMax}.` : ''}
+          Five racers. A track nobody has seen. Collect cells for points, cans for boost.
         </p>
       </div>
 
-      <div className="card p-6">
-        <div className="chip mb-4">Lobby · 5 slots</div>
+      {/* Where you stand today — the reason to run another race. */}
+      <div className="card mb-5 grid grid-cols-2 gap-4 p-5 sm:grid-cols-4 rise">
+        <Metric label="Today's rank" value={rank ? `#${rank}` : '—'} accent />
+        <Metric label="Today's points" value={dayPoints.toLocaleString()} />
+        <Metric label="Projected tickets" value={projected} gold={projected > 0} />
+        <div>
+          <div className="stat-label">Day closes</div>
+          <div className="num mt-1 text-lg font-bold text-slate-200">
+            {closesAt ? <DayCountdown closesAt={closesAt} /> : '—'}
+          </div>
+        </div>
+      </div>
+
+      <div className="card p-6 rise" style={{ animationDelay: '80ms' }}>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="chip">Lobby · 5 slots</div>
+          <div className="chip chip-cyan">
+            Entry {entryFeeUnits ? formatUsdc(entryFeeUnits) : '—'}
+            {entriesLeft !== null && ` · ${entriesLeft} left today`}
+          </div>
+        </div>
 
         <div className="space-y-2.5">
           {slots.map((s, i) => (
@@ -223,22 +256,51 @@ function Lobby({
 
         <p className="mt-4 text-xs text-slate-500">
           Empty slots fill with bots so a race always starts instantly — the field is
-          drawn fresh for every race.
+          drawn fresh every time.
         </p>
 
         <button
           onClick={onStart}
-          disabled={!ready || creating}
+          disabled={!ready || creating || broke}
           className="btn btn-primary mt-6 w-full py-4 text-base"
         >
-          {creating ? 'Building your track…' : ready ? 'Start race' : 'Preparing your wallet…'}
+          {creating
+            ? 'Building your track…'
+            : broke
+              ? 'Out of entries — resets at 17:00 UTC'
+              : ready
+                ? 'Race now'
+                : 'Preparing your wallet…'}
         </button>
       </div>
 
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
         <Tip title="Steer" body="← → or A / D. On touch, drag anywhere on the track." />
-        <Tip title="Boost" body="Space, twice per race. Save one for the run to the line." />
-        <Tip title="Collect" body="Green Shards are numbers. Amber ones are traps — they duplicate a number you hold." />
+        <Tip
+          title="Boost"
+          body="Hold Space. It burns fuel and works even while stunned — it's how you recover from a hit."
+        />
+        <Tip
+          title="Collect"
+          body="Green hexes are points. Cyan cans are fuel. Amber hexes are traps — they cost you."
+        />
+      </div>
+    </div>
+  );
+}
+
+function Metric({
+  label, value, accent, gold,
+}: { label: string; value: string | number; accent?: boolean; gold?: boolean }) {
+  return (
+    <div>
+      <div className="stat-label">{label}</div>
+      <div
+        className={`num mt-1 text-lg font-bold ${
+          gold ? 'text-[var(--gold)]' : accent ? 'text-[var(--accent)]' : 'text-slate-200'
+        }`}
+      >
+        {value}
       </div>
     </div>
   );

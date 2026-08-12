@@ -39,24 +39,39 @@ export type Obstacle = {
   duty?: number;
 };
 
-export type Shard = {
+/**
+ * What driving through a pickup gives you.
+ *
+ *  · 'cell'  — points, the leaderboard currency.
+ *  · 'fuel'  — boost fuel, the comeback currency.
+ *  · 'trap'  — looks like a cell, costs points. Punishes grabbing blindly.
+ */
+export type PickupKind = 'cell' | 'fuel' | 'trap';
+
+export type Pickup = {
   id: number;
+  kind: PickupKind;
   x: number;
   y: number;
-  /** The Megapot normal-ball value this Shard carries. */
-  number: number;
-  /** Score Traps carry a number the player is likely to already hold. */
-  isTrap: boolean;
+  /** Points for 'cell'/'trap' (trap is a cost), fuel units for 'fuel'. */
+  value: number;
 };
 
+/**
+ * Pickup payouts. They live here, with no imports above them, because both the
+ * track generator that places pickups and the engine that consumes them need
+ * the same numbers and neither should own them.
+ */
+export const CELL_VALUE = 10;
+export const TRAP_COST = 12;
+export const FUEL_CAN_VALUE = 32;
+
 export type OrbSpawn = {
-  /** Track position where the Golden Orb appears. */
+  /** Track position where the Jackpot Orb appears. */
   x: number;
   y: number;
   /** Seconds into the race before it lights up. */
   activateAt: number;
-  /** The Megapot bonusball this orb carries. */
-  bonusball: number;
 };
 
 export type SectionInstance = {
@@ -72,16 +87,18 @@ export type Track = {
   length: number;
   sections: SectionInstance[];
   obstacles: Obstacle[];
-  shards: Shard[];
+  pickups: Pickup[];
   /** Checkpoint y-positions where steals are allowed. */
   stealZones: number[];
   orb: OrbSpawn | null;
-  /** Ball ranges this track was generated against — stamped for later validation. */
-  ballMax: number;
-  bonusballMax: number;
 };
 
-/** One tick of player intent. Lateral axis in [-1, 1]; boost is a one-shot. */
+/**
+ * One tick of player intent.
+ *
+ * `boost` is HELD, not a one-shot: it burns fuel for as long as it is down and
+ * does nothing once the tank is empty.
+ */
 export type Input = {
   lateral: number;
   boost: boolean;
@@ -97,21 +114,32 @@ export type RacerState = {
   speed: number;
   finished: boolean;
   finishTick: number | null;
+  /**
+   * Set when the player bailed out mid-race. A retired racer stops moving and
+   * forfeits everything that depends on completing the race.
+   */
+  retired: boolean;
+  retiredTick: number | null;
   /** Ticks remaining of the stun/slow applied by a hard hit. */
   stunTicks: number;
   hardHits: number;
   softHits: number;
-  collectedShardIds: number[];
-  /** Shard numbers in pickup order — becomes the ticket's normals. */
-  collectedNumbers: number[];
+  /** Boost fuel, 0..FUEL_MAX. Spent by holding boost, refilled only by cans. */
+  fuel: number;
+  /** Ticks spent boosting — drives the HUD flame and the afterburner stat. */
+  boostTicks: number;
+  collectedPickupIds: number[];
+  /** Net points from cells minus traps. */
+  pickupPoints: number;
+  cellsCollected: number;
+  fuelCansCollected: number;
+  trapsHit: number;
   hasOrb: boolean;
-  bonusball: number | null;
   nearMisses: number;
   /** Steal events this racer landed. */
   steals: number;
   /** Points taken from this racer by others. */
   stolenFrom: number;
-  boostsLeft: number;
   /** Checkpoints already used for a steal, so each fires at most once. */
   stealZonesUsed: number[];
 };
@@ -122,15 +150,22 @@ export type RaceResultRacer = {
   isBot: boolean;
   placement: number;
   finishTick: number | null;
+  finished: boolean;
+  /** True when the racer quit. Mutually exclusive with `finished`. */
+  retired: boolean;
   hardHits: number;
   cleanRun: boolean;
-  shardsCollected: number;
-  collectedNumbers: number[];
+  pickupPoints: number;
+  cellsCollected: number;
+  fuelCans: number;
+  traps: number;
+  boostTicks: number;
   hasOrb: boolean;
-  bonusball: number | null;
   nearMisses: number;
   steals: number;
   stolenFrom: number;
+  /** Fraction of the track covered, 0..1. Ranks racers who never finished. */
+  progress: number;
 };
 
 export type RaceOutcome = {

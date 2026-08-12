@@ -1,17 +1,21 @@
 /**
  * Ticket purchase — SERVER ONLY.
  *
- * The treasury pays the USDC; `_recipient` is the player, so the ticket NFT is
- * minted straight into their wallet. This module must never be imported from a
- * client component.
+ * The treasury pays the USDC out of the day's pooled entry fees; `_recipient` is
+ * the player, so the ticket NFT is minted straight into their wallet. This module
+ * must never be imported from a client component.
+ *
+ * Numbers are chosen by the protocol, not by us. `JackpotRandomTicketBuyer` is
+ * the contract Megapot provides for exactly this case, and using it means we
+ * never have to reason about ball ranges drifting between a race and a purchase —
+ * the protocol picks valid numbers at mint time, every time.
  */
 
 import 'server-only';
 import { publicClient, getTreasuryClient, getReferrer } from './client';
 import { CONTRACTS } from './addresses';
-import { JACKPOT_ABI, RANDOM_TICKET_BUYER_ABI, ERC20_ABI } from './abi';
+import { RANDOM_TICKET_BUYER_ABI, ERC20_ABI } from './abi';
 import { getCurrentDrawing, isSettling } from './drawing';
-import { assertValidTicket, type TicketNumbers } from './numbers';
 
 /** Referral splits are 1e18-scaled weights that must sum to EXACTLY 1e18. */
 const PRECISE_UNIT = 1_000_000_000_000_000_000n;
@@ -20,12 +24,15 @@ const PRECISE_UNIT = 1_000_000_000_000_000_000n;
 const SOURCE_TAG: `0x${string}` =
   '0x72616c6c792d7661756c74000000000000000000000000000000000000000000'; // "rally-vault"
 
+/** `buyTickets` accepts 1–10 per call, so larger awards are split into batches. */
+export const MAX_TICKETS_PER_TX = 10;
+
 export type PurchaseResult = {
   txHash: `0x${string}`;
   drawingId: bigint;
   recipient: `0x${string}`;
   ticketPrice: bigint;
-  numbers: TicketNumbers[];
+  count: number;
 };
 
 export class SettlementInProgressError extends Error {
@@ -39,20 +46,21 @@ export class SettlementInProgressError extends Error {
  * Dry run.
  *
  * Builds the transaction for real, validates every argument, and SIMULATES it
- * against live Base Sepolia state — it just doesn't broadcast. That still
- * catches a malformed ticket, a bad referral split or a wrong address, because
- * those revert in simulation exactly as they would on-chain. Only failures
- * caused by the treasury being unfunded are tolerated and waved through with a
- * synthetic hash.
+ * against live chain state — it just doesn't broadcast. That still catches a bad
+ * referral split, a wrong address or an invalid ticket count, because those
+ * revert in simulation exactly as they would on-chain. Only failures caused by
+ * the treasury being unfunded are tolerated and waved through with a synthetic
+ * hash.
  *
- * Set MEGAPOT_DRY_RUN=false once the treasury holds testnet USDC.
+ * Defaults to ON. An unset variable must never mean "spend real money" — the
+ * only way to broadcast is to say so explicitly.
  */
-const DRY_RUN = process.env.MEGAPOT_DRY_RUN === 'true';
+const DRY_RUN = process.env.MEGAPOT_DRY_RUN !== 'false';
 
 /** Reverts that mean "your arguments are wrong" — never acceptable, even dry. */
 const ARGUMENT_ERRORS = [
-  'InvalidBonusball', 'InvalidTicketCount', 'InvalidRecipient',
-  'ReferralSplitSumInvalid', 'ReferralSplitLengthMismatch', 'InvalidReferralSplitBps',
+  'InvalidTicketCount', 'InvalidRecipient', 'InvalidReferralSplitBps',
+  'ReferralSplitSumInvalid', 'ReferralSplitLengthMismatch',
   'AbiEncodingError', 'InvalidArrayError', 'AbiErrorSignatureNotFound',
 ];
 
@@ -110,7 +118,7 @@ function referralArgs(): [readonly `0x${string}`[], readonly bigint[]] {
 }
 
 /**
- * Ensure the Jackpot contract can pull `total` USDC from the treasury.
+ * Ensure `spender` can pull `total` USDC from the treasury.
  * Approves only when the existing allowance is short.
  */
 async function ensureAllowance(spender: `0x${string}`, total: bigint) {
@@ -149,80 +157,17 @@ async function ensureAllowance(spender: `0x${string}`, total: bigint) {
 }
 
 /**
- * Buy tickets with the player's EARNED numbers. This is the primary path —
- * the Point Bank threshold crossing.
- */
-export async function buyEarnedTickets(
-  recipient: `0x${string}`,
-  tickets: TicketNumbers[],
-): Promise<PurchaseResult> {
-  if (tickets.length < 1 || tickets.length > 10) {
-    throw new Error(`Jackpot.buyTickets accepts 1-10 tickets, got ${tickets.length}`);
-  }
-
-  const drawing = await getCurrentDrawing();
-  if (isSettling(drawing)) throw new SettlementInProgressError();
-
-  // Re-validate against the LIVE range, not the range the race was generated with.
-  for (const t of tickets) {
-    assertValidTicket(t, drawing.ballMax, drawing.bonusballMax);
-  }
-
-  const total = drawing.ticketPrice * BigInt(tickets.length);
-  const [referrers, split] = referralArgs();
-  const { account, wallet } = getTreasuryClient();
-
-  const args = [
-    tickets.map((t) => ({ normals: t.normals, bonusball: t.bonusball })),
-    recipient,
-    referrers,
-    split,
-    SOURCE_TAG,
-  ] as unknown[];
-
-  let txHash: `0x${string}`;
-
-  if (DRY_RUN) {
-    txHash = await simulateOnly(
-      {
-        account,
-        address: CONTRACTS.jackpot,
-        abi: JACKPOT_ABI,
-        functionName: 'buyTickets',
-        args,
-      },
-      `earned:${recipient}:${drawing.drawingId}:${tickets.map((t) => t.normals.join('-')).join('|')}`,
-    );
-  } else {
-    await ensureAllowance(CONTRACTS.jackpot, total);
-    txHash = await wallet.writeContract({
-      address: CONTRACTS.jackpot,
-      abi: JACKPOT_ABI,
-      functionName: 'buyTickets',
-      args,
-    });
-    await publicClient.waitForTransactionReceipt({ hash: txHash });
-  }
-
-  return {
-    txHash,
-    drawingId: drawing.drawingId,
-    recipient,
-    ticketPrice: drawing.ticketPrice,
-    numbers: tickets,
-  };
-}
-
-/**
- * Buy protocol-randomised tickets. Used for the Cookie path, which rewards
- * showing up rather than skill — so its numbers are not earned.
+ * Buy `count` protocol-randomised tickets for `recipient`.
+ *
+ * One call, 1–10 tickets. Callers awarding more than ten should use
+ * `buyTicketsFor`, which batches.
  */
 export async function buyRandomTickets(
   recipient: `0x${string}`,
   count: number,
-): Promise<Omit<PurchaseResult, 'numbers'>> {
-  if (count < 1 || count > 10) {
-    throw new Error(`JackpotRandomTicketBuyer.buyTickets accepts 1-10, got ${count}`);
+): Promise<PurchaseResult> {
+  if (count < 1 || count > MAX_TICKETS_PER_TX) {
+    throw new Error(`JackpotRandomTicketBuyer.buyTickets accepts 1-${MAX_TICKETS_PER_TX}, got ${count}`);
   }
 
   const drawing = await getCurrentDrawing();
@@ -248,7 +193,7 @@ export async function buyRandomTickets(
       `random:${recipient}:${drawing.drawingId}:${count}`,
     );
   } else {
-    // The random buyer pulls USDC itself, so it is the spender here — not the Jackpot.
+    // The random buyer pulls USDC itself, so it is the spender here.
     await ensureAllowance(CONTRACTS.randomTicketBuyer, total);
     txHash = await wallet.writeContract({
       address: CONTRACTS.randomTicketBuyer,
@@ -264,5 +209,24 @@ export async function buyRandomTickets(
     drawingId: drawing.drawingId,
     recipient,
     ticketPrice: drawing.ticketPrice,
+    count,
   };
+}
+
+/**
+ * Buy any number of tickets for one recipient, batching to the contract's
+ * per-call limit. Returns one result per transaction.
+ */
+export async function buyTicketsFor(
+  recipient: `0x${string}`,
+  count: number,
+): Promise<PurchaseResult[]> {
+  const results: PurchaseResult[] = [];
+  let left = count;
+  while (left > 0) {
+    const batch = Math.min(MAX_TICKETS_PER_TX, left);
+    results.push(await buyRandomTickets(recipient, batch));
+    left -= batch;
+  }
+  return results;
 }

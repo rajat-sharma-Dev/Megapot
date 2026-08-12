@@ -39,7 +39,7 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     maxLength: 1900,
     build: ({ rng, startY, length, nextId }) => {
       const out: Obstacle[] = [];
-      const count = randInt(rng, 4, 6);
+      const count = randInt(rng, 3, 5);
       const gap = length / (count + 1);
       const speed = randRange(rng, 1.1, 2.2);
       const amp = randRange(rng, 200, 340);
@@ -68,7 +68,7 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     maxLength: 2000,
     build: ({ rng, startY, length, nextId }) => {
       const out: Obstacle[] = [];
-      const count = randInt(rng, 4, 6);
+      const count = randInt(rng, 3, 4);
       const gap = length / (count + 1);
       const speed = randRange(rng, 0.6, 1.3);
       for (let i = 0; i < count; i++) {
@@ -97,7 +97,7 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     maxLength: 1800,
     build: ({ rng, startY, length, nextId }) => {
       const out: Obstacle[] = [];
-      const rows = randInt(rng, 6, 9);
+      const rows = randInt(rng, 5, 7);
       const gap = length / (rows + 1);
       const speed = randRange(rng, 1.4, 2.4);
       const duty = randRange(rng, 0.42, 0.56);
@@ -160,7 +160,7 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     maxLength: 1900,
     build: ({ rng, startY, length, nextId }) => {
       const out: Obstacle[] = [];
-      const rows = randInt(rng, 3, 5);
+      const rows = randInt(rng, 2, 4);
       const gap = length / (rows + 1);
       const speed = randRange(rng, 1.8, 3.0);
       const duty = randRange(rng, 0.26, 0.38);
@@ -199,7 +199,7 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     maxLength: 1700,
     build: ({ rng, startY, length, nextId }) => {
       const out: Obstacle[] = [];
-      const count = randInt(rng, 3, 5);
+      const count = randInt(rng, 2, 4);
       const gap = length / (count + 1);
       for (let i = 0; i < count; i++) {
         out.push({
@@ -256,7 +256,7 @@ export const SECTION_TEMPLATES: SectionTemplate[] = [
     maxLength: 1800,
     build: ({ rng, startY, length, nextId }) => {
       const out: Obstacle[] = [];
-      const count = randInt(rng, 4, 6);
+      const count = randInt(rng, 3, 5);
       const gap = length / (count + 1);
       const fast = randRange(rng, 1.6, 2.6);
       const slow = randRange(rng, 0.5, 1.0);

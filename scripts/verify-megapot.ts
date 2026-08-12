@@ -1,19 +1,25 @@
 /**
- * Day-1 proof: the Megapot layer talks to the real protocol correctly.
+ * Proof that the Megapot layer talks to the real protocol correctly.
  *
  *   npx tsx scripts/verify-megapot.ts
  *
  * Reads live drawing state from BOTH Base mainnet and Base Sepolia, checks the
- * Data API, and exercises the Shard -> ticket builder against the real ball
- * ranges. No transactions, no spending — read-only.
+ * Data API, confirms the contract we actually buy through exposes the signature
+ * we call, and derives the vault economy from the live ticket price on each
+ * network. No transactions, no spending — read-only.
  */
 
 import { createPublicClient, http } from 'viem';
 import { base, baseSepolia } from 'viem/chains';
 import { ADDRESSES } from '../src/lib/megapot/addresses';
-import { JACKPOT_ABI } from '../src/lib/megapot/abi';
-import { buildTicket, generateShardNumbers, generateOrbBonusball, makeRng } from '../src/lib/megapot/numbers';
+import { JACKPOT_ABI, RANDOM_TICKET_BUYER_ABI } from '../src/lib/megapot/abi';
 import { formatUsdc, type DrawingState } from '../src/lib/megapot/drawing';
+// The drawing helper truncates to cents, which renders a $0.002 Sepolia entry fee
+// as "$0.00". The display formatter keeps significant digits, so the economy
+// section uses that instead.
+import { formatUsdc as formatPrecise } from '../src/lib/format';
+import { entryFeeUnits, ENTRIES_PER_TICKET } from '../src/lib/vault/economy';
+import { allocateTickets, poolToTickets } from '../src/lib/vault/allocate';
 
 const NETWORKS = [
   { name: 'Base Mainnet', chain: base, rpc: 'https://mainnet.base.org', addrs: ADDRESSES.mainnet },
@@ -59,10 +65,30 @@ async function readNetwork(n: (typeof NETWORKS)[number]) {
   }
 }
 
+/**
+ * Fetch with a couple of retries.
+ *
+ * These are calls to somebody else's service over the public internet, and a
+ * single transient failure was enough to turn this whole script red — which
+ * trains you to ignore it. Retry, then report honestly.
+ */
+async function fetchRetry(url: string, attempts = 3): Promise<Response> {
+  let last: Error | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    } catch (e) {
+      last = e as Error;
+      await new Promise((r) => setTimeout(r, 700 * (i + 1)));
+    }
+  }
+  throw last ?? new Error('fetch failed');
+}
+
 async function checkDataApi(base: string, label: string) {
   console.log(`\n\x1b[1mData API — ${label}\x1b[0m  ${base}`);
   try {
-    const res = await fetch(`${base}/rounds/active`);
+    const res = await fetchRetry(`${base}/rounds/active`);
     if (!res.ok) { bad(`/rounds/active -> ${res.status}`); return; }
     const r = await res.json();
     ok(`round ${r.id} · pool $${(Number(r.prize_pool.amount) / 10 ** r.prize_pool.decimals).toLocaleString()}`);
@@ -74,62 +100,96 @@ async function checkDataApi(base: string, label: string) {
   }
 }
 
-function checkTicketBuilder(ballMax: number, bonusballMax: number) {
-  console.log(`\n\x1b[1mShard → Ticket builder\x1b[0m  (ballMax=${ballMax}, bonusballMax=${bonusballMax})`);
-  const rng = makeRng(20260808);
+/**
+ * The contract we actually spend through.
+ *
+ * Numbers are the protocol's job, not ours, so every purchase goes through
+ * JackpotRandomTicketBuyer. Confirm the deployment exists and that the ABI we
+ * ship still matches the signature we call — a silent signature drift is the
+ * failure mode that would only surface at payout time.
+ */
+async function checkRandomBuyer(n: (typeof NETWORKS)[number]) {
+  console.log(`\n\x1b[1mJackpotRandomTicketBuyer — ${n.name}\x1b[0m  ${n.addrs.randomTicketBuyer}`);
+  const client = createPublicClient({ chain: n.chain, transport: http(n.rpc) });
 
-  // 1. Perfect run — all five earned.
-  const shards = generateShardNumbers(8, ballMax, rng);
-  const orb = generateOrbBonusball(bonusballMax, rng);
-  const perfect = buildTicket(shards, orb, ballMax, bonusballMax, rng);
-  if (perfect.earnedNormals.length === 5 && perfect.bonusballEarned) {
-    ok(`perfect run: shards [${shards.join(',')}] → normals [${perfect.normals.join(',')}] ✦${perfect.bonusball} (all earned)`);
-  } else bad(`perfect run should earn 5 normals + bonusball, got ${perfect.earnedNormals.length} + ${perfect.bonusballEarned}`);
-
-  // 2. Partial run — two collected, three filled, no orb.
-  //    Take two DISTINCT shard values; the generator may repeat a value across shards.
-  const distinctShards = [...new Set(shards)].slice(0, 2);
-  const partial = buildTicket(distinctShards, null, ballMax, bonusballMax, rng);
-  if (partial.earnedNormals.length === 2 && partial.filledNormals.length === 3 && !partial.bonusballEarned) {
-    ok(`partial run: 2 earned [${partial.earnedNormals}] + 3 filled [${partial.filledNormals}] → [${partial.normals.join(',')}] ✦${partial.bonusball}`);
-  } else bad(`partial run mismatch: ${partial.earnedNormals.length} earned / ${partial.filledNormals.length} filled`);
-
-  // 3. Score Trap — a duplicate must not consume a second slot.
-  const dup = buildTicket([7, 7, 7, 12, 19, 23, 28], 3, ballMax, bonusballMax, rng);
-  if (dup.earnedNormals.length === 5 && new Set(dup.normals).size === 5) {
-    ok(`score trap: duplicates collapsed → [${dup.normals.join(',')}] (5 unique)`);
-  } else bad(`duplicate handling failed: [${dup.normals}]`);
-
-  // 4. Range shrink between race and purchase — out-of-range must be re-rolled.
-  const shrunk = buildTicket([ballMax + 5, 1, 2, 3, 4, 5], bonusballMax + 3, ballMax, bonusballMax, rng);
-  if (shrunk.rerolledOutOfRange.length === 2 && shrunk.normals.every((n) => n <= ballMax)) {
-    ok(`range shrink: re-rolled [${shrunk.rerolledOutOfRange}] → valid [${shrunk.normals.join(',')}] ✦${shrunk.bonusball}`);
-  } else bad(`out-of-range handling failed: rerolled=${shrunk.rerolledOutOfRange}`);
-
-  // 5. Fuzz — every ticket must satisfy the protocol's rules.
-  let fuzzFails = 0;
-  for (let i = 0; i < 2000; i++) {
-    const r = makeRng(i);
-    const count = 1 + Math.floor(r() * 8);
-    const picks = Array.from({ length: count }, () => 1 + Math.floor(r() * ballMax));
-    const t = buildTicket(picks, r() > 0.6 ? generateOrbBonusball(bonusballMax, r) : null, ballMax, bonusballMax, r);
-    const asc = t.normals.every((n, j) => j === 0 || n > t.normals[j - 1]);
-    const inRange = t.normals.every((n) => n >= 1 && n <= ballMax);
-    if (t.normals.length !== 5 || !asc || !inRange || t.bonusball < 1 || t.bonusball > bonusballMax) fuzzFails++;
+  try {
+    const code = await client.getCode({ address: n.addrs.randomTicketBuyer });
+    if (code && code !== '0x') ok(`contract deployed (${(code.length - 2) / 2} bytes)`);
+    else bad('no contract code at that address');
+  } catch (e) {
+    bad(`code read failed: ${(e as Error).message.split('\n')[0]}`);
   }
-  if (fuzzFails === 0) ok('fuzz 2000 runs: all tickets unique, ascending, in range');
-  else bad(`fuzz: ${fuzzFails}/2000 invalid tickets`);
+
+  const fn = (RANDOM_TICKET_BUYER_ABI as readonly any[]).find(
+    (e) => e.type === 'function' && e.name === 'buyTickets',
+  );
+  if (!fn) {
+    bad('buyTickets missing from the shipped ABI');
+    return;
+  }
+  const sig = `buyTickets(${fn.inputs.map((i: any) => i.type).join(',')})`;
+  const expected = 'buyTickets(uint256,address,address[],uint256[],bytes32)';
+  if (sig === expected) ok(`ABI signature matches what we call: ${sig}`);
+  else bad(`signature drift — ABI has ${sig}, code calls ${expected}`);
+}
+
+/**
+ * The vault economy, derived from each network's LIVE ticket price.
+ *
+ * This is the check that would have caught hardcoding "$0.20": on Sepolia a
+ * ticket costs $0.01, so a fixed 20-cent entry would be twenty times the price
+ * of the thing it is supposed to be buying a fifth of.
+ */
+function checkEconomy(label: string, ticketPrice: bigint) {
+  console.log(`\n\x1b[1mVault economy — ${label}\x1b[0m  (ticket ${formatPrecise(ticketPrice)})`);
+
+  const fee = entryFeeUnits(ticketPrice);
+  ok(`entry fee = ${formatPrecise(fee)} (a fifth of a ticket)`);
+
+  if (fee * ENTRIES_PER_TICKET === ticketPrice) {
+    ok(`${ENTRIES_PER_TICKET} entries fund exactly one ticket, no rounding loss`);
+  } else {
+    bad(`${ENTRIES_PER_TICKET} × ${fee} = ${fee * ENTRIES_PER_TICKET}, expected ${ticketPrice}`);
+  }
+
+  // A day with 23 entries: whole tickets bought, remainder carried.
+  const pool = fee * 23n;
+  const { tickets, spentUnits, carryOutUnits } = poolToTickets(pool, ticketPrice);
+  if (spentUnits + carryOutUnits === pool) {
+    ok(`23 entries (${formatPrecise(pool)}) → ${tickets} tickets, ${formatPrecise(carryOutUnits)} carried`);
+  } else {
+    bad(`pool accounting lost value: ${spentUnits} + ${carryOutUnits} != ${pool}`);
+  }
+
+  // And those tickets deal out down a ladder without minting or losing any.
+  const ladder = Array.from({ length: 9 }, (_, i) => ({
+    playerId: `0x${String(i).padStart(40, '0')}`,
+    name: `P${i}`,
+    points: 900 - i * 70,
+  }));
+  const alloc = allocateTickets(ladder, tickets);
+  const dealt = alloc.reduce((s, a) => s + a.tickets, 0);
+  const monotone = alloc.every((a, i) => i === 0 || a.tickets <= alloc[i - 1].tickets);
+
+  if (dealt === tickets && monotone) {
+    ok(`allocated ${dealt}/${tickets} down a 9-player ladder: [${alloc.map((a) => a.tickets).join(',')}]`);
+  } else {
+    bad(`allocation broken: dealt ${dealt} of ${tickets}, monotone=${monotone}`);
+  }
 }
 
 (async () => {
   console.log('\x1b[1m═══ Rally Vault · Megapot integration verification ═══\x1b[0m');
 
   const mainnet = await readNetwork(NETWORKS[0]);
-  await readNetwork(NETWORKS[1]);
+  const testnet = await readNetwork(NETWORKS[1]);
+  await checkRandomBuyer(NETWORKS[0]);
+  await checkRandomBuyer(NETWORKS[1]);
   await checkDataApi('https://api.megapot.io/v1', 'mainnet');
   await checkDataApi('https://api-testnet.megapot.io/v1', 'testnet');
 
-  checkTicketBuilder(mainnet?.ballMax ?? 30, mainnet?.bonusballMax ?? 10);
+  if (mainnet) checkEconomy('Base Mainnet', mainnet.ticketPrice);
+  if (testnet) checkEconomy('Base Sepolia', testnet.ticketPrice);
 
   console.log(
     failures === 0

@@ -3,9 +3,8 @@
  *
  * This runs on the SERVER against a re-simulated race. The client renders a
  * preview with the same functions, but a client-reported score is never trusted:
- * points decide who gets real lottery tickets at the end of the day, so the only
- * score that counts is one the server derived itself from the seed and the
- * input log.
+ * the highest total in a lobby takes the entire pot, so the only score that
+ * counts is one the server derived itself from the seed and the input log.
  */
 
 import type { RaceOutcome, RaceResultRacer } from '../game/types';
@@ -17,7 +16,22 @@ export const NEAR_MISS_CAP = 10;
 export const STEAL_VALUE = 15;
 export const MAX_STEALS = 2;
 
-export const PODIUM_BONUS: Record<number, number> = { 1: 60, 2: 35, 3: 20, 4: 8, 5: 5 };
+/**
+ * Finish position bonus — deliberately large enough to fight over and
+ * deliberately too small to decide the race on its own.
+ *
+ * A mid-skill run scores around 140 points in total, so first place is worth
+ * roughly a third of a run: a real prize, and a real reason to sprint for the
+ * line. But the gap between first and third is only 35 points, which one good
+ * section of point cells covers. That is the intended shape of the game — the
+ * racer who wins the sprint and collects nothing loses to the racer who came
+ * third and drove the whole track.
+ *
+ * The tail is flat on purpose. 4th and 5th still pay, because a player who is
+ * out of contention for the line still has a pot to play for and should keep
+ * collecting rather than quitting.
+ */
+export const PODIUM_BONUS: Record<number, number> = { 1: 60, 2: 40, 3: 25, 4: 15, 5: 8 };
 
 export const ORB_BASE = 80;
 export const ORB_ROLLOVER_STEP = 20;
@@ -50,7 +64,10 @@ export type ScoreBreakdown = {
   nearMiss: number;
   nearMissCount: number;
   podium: number;
+  /** Points paid for the Orb — zero unless the racer also finished. */
   orb: number;
+  /** Whether the racer held the Orb at all, which a DNF needs to explain itself. */
+  orbClaimed: boolean;
   boost: number;
   boostSeconds: number;
   fuelCans: number;
@@ -86,7 +103,19 @@ export function scoreRace(outcome: RaceOutcome, rolloverCount = 0): ScoreBreakdo
     const pickups = r.pickupPoints;
     const nearMiss = Math.min(NEAR_MISS_CAP, r.nearMisses) * NEAR_MISS_POINTS;
     const boost = Math.min(BOOST_POINTS_CAP, Math.floor(r.boostTicks / BOOST_TICKS_PER_POINT));
-    const orb = r.hasOrb ? orbWorth : 0;
+
+    /**
+     * The Orb has to be carried home.
+     *
+     * It pays only on a completed run, and that condition is load bearing rather
+     * than flavour. The Orb is worth 80–200 points and it is exclusive, so with
+     * no finishing requirement the optimal line was: take the Orb, quit on the
+     * spot, keep a score no honest finisher could beat, and deny it to everyone
+     * else on the way out. Measured, that beat playing the race out. Requiring
+     * the line turns claiming it into a commitment — you still have to survive
+     * the rest of the track with it.
+     */
+    const orb = r.hasOrb && completed ? orbWorth : 0;
 
     const finish = completed ? FINISH_BONUS : 0;
     const cleanRun = r.cleanRun ? CLEAN_RUN_BONUS : 0;
@@ -137,6 +166,7 @@ export function scoreRace(outcome: RaceOutcome, rolloverCount = 0): ScoreBreakdo
       nearMissCount: b.nearMissCount,
       podium: b.podium,
       orb: b.orb,
+      orbClaimed: b.racer.hasOrb,
       boost: b.boost,
       boostSeconds: b.racer.boostTicks / 60,
       fuelCans: b.racer.fuelCans,
@@ -192,7 +222,18 @@ export function breakdownRows(b: ScoreBreakdown): BreakdownRow[] {
     rows.push({ label: 'Steals', value: b.stealGained, hint: 'Overtakes at checkpoints' });
   }
   if (b.stealLost) rows.push({ label: 'Stolen from you', value: -b.stealLost });
-  if (b.orb) rows.push({ label: 'Jackpot Orb', value: b.orb, hint: 'Claimed it first' });
+  if (b.orb) {
+    rows.push({ label: 'Jackpot Orb', value: b.orb, hint: 'Claimed it, and carried it home' });
+  } else if (dnf && b.orbClaimed) {
+    // Shown as an explicit zero, not hidden: leaving with the Orb is the single
+    // most expensive thing a player can do, and they need to see the number.
+    rows.push({
+      label: 'Jackpot Orb',
+      value: 0,
+      hint: 'Forfeited — the Orb only pays if you finish',
+      forfeited: true,
+    });
+  }
 
   rows.push({
     label: 'Clean run',
@@ -201,9 +242,9 @@ export function breakdownRows(b: ScoreBreakdown): BreakdownRow[] {
     forfeited: dnf || b.cleanRun === 0,
   });
   rows.push({
-    label: dnf ? 'Podium' : `Podium (${ordinal(b.placement)})`,
+    label: dnf ? 'Finish position' : `Finish position (${ordinal(b.placement)})`,
     value: b.podium,
-    hint: dnf ? 'Forfeited — DNF does not place' : undefined,
+    hint: dnf ? 'Forfeited — a DNF does not place' : 'Worth having, never enough on its own',
     forfeited: dnf,
   });
 

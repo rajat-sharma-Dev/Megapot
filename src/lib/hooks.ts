@@ -1,12 +1,18 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ScoreBreakdown } from './points/scoring';
 
+/** Live Megapot state plus the economy derived from it. */
 export type Jackpot = {
   ok: boolean;
   network: string;
   chainId: number;
   jackpotAddress: string;
+  usdcAddress: `0x${string}`;
+  treasuryAddress: `0x${string}` | null;
+  depositsEnabled: boolean;
+
   drawingId: string;
   prizePool: string;
   prizePoolFormatted: string;
@@ -20,10 +26,18 @@ export type Jackpot = {
   jackpotLock: boolean;
   referralFeePct: number;
   referralWinSharePct: number;
+
+  economy: {
+    seatsPerRace: number;
+    shardsPerTicket: number;
+    entryFeeUnits: string;
+    fullPotUnits: string;
+    minDepositUnits: string;
+    houseFloatUnits: string;
+  };
 };
 
-/** Live Megapot drawing state, refreshed on an interval. */
-export function useJackpot(pollMs = 20_000) {
+export function useJackpot(pollMs = 25_000) {
   const [data, setData] = useState<Jackpot | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,6 +55,7 @@ export function useJackpot(pollMs = 20_000) {
 
   useEffect(() => {
     load();
+    if (!pollMs) return;
     const id = setInterval(load, pollMs);
     return () => clearInterval(id);
   }, [load, pollMs]);
@@ -48,49 +63,71 @@ export function useJackpot(pollMs = 20_000) {
   return { jackpot: data, error, reload: load };
 }
 
+export type RaceHistoryRow = {
+  lobbyId: string;
+  settledAt: string;
+  points: number;
+  placement: number | null;
+  retired: boolean | null;
+  won: boolean;
+  potUnits: string;
+  stakedSeats: number;
+  winnerName: string | null;
+  houseWins: boolean;
+  ticketsMinted: number;
+};
+
 export type PlayerProfile = {
   ok: boolean;
   player: {
     id: string;
     name: string;
-    credits: string;
-    lifetimePoints: number;
-    racesCompleted: number;
+    racesPlayed: number;
+    racesWon: number;
     racesRetired: number;
+    lifetimePoints: number;
     bestRaceScore: number;
     totalStolen: number;
     ticketsEarned: number;
+    createdAt: string;
+  };
+  balance: {
+    creditsUnits: string;
+    entriesAffordable: number;
+    entryFeeUnits: string;
+    lifetimeDepositedUnits: string;
+    lifetimeWithdrawnUnits: string;
+    lifetimeWageredUnits: string;
+    lifetimeWonUnits: string;
+  };
+  vault: {
+    units: string;
+    shards: number;
+    shardsPerTicket: number;
+    progress: number;
+    ticketPriceUnits: string;
   };
   tickets: Array<{
     id: string;
     txHash: string;
     drawingId: string;
     count: number;
-    dayKey: string;
-    rank: number;
-    points: number;
+    lobbyId: string | null;
     network: string;
     createdAt: string;
+    explorerUrl: string;
   }>;
-  credits: {
-    units: string;
-    entriesAffordable: number;
-    entryFeeUnits: string;
-    freeEntriesPerDay: number;
-  };
-  today: {
-    key: string;
-    closesAt: string;
-    rank: number | null;
-    players: number;
-    points: number;
-    races: number;
-    bestScore: number;
-    projectedTickets: number;
-    pointsToNextRank: number | null;
-    poolUnits: string;
-    projectedTicketsTotal: number;
-  };
+  ledger: Array<{
+    id: string;
+    kind: string;
+    deltaUnits: string;
+    txHash: string | null;
+    lobbyId: string | null;
+    note: string | null;
+    createdAt: string;
+    explorerUrl: string | null;
+  }>;
+  history: RaceHistoryRow[];
 };
 
 export function usePlayer(address: string | null, pollMs = 0) {
@@ -98,12 +135,17 @@ export function usePlayer(address: string | null, pollMs = 0) {
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
-    if (!address) return;
+    if (!address) {
+      setData(null);
+      return;
+    }
     setLoading(true);
     try {
       const res = await fetch(`/api/player?address=${address}`);
       const json = await res.json();
       if (json.ok) setData(json);
+    } catch {
+      // Leave the last good profile on screen rather than blanking the HUD.
     } finally {
       setLoading(false);
     }
@@ -116,78 +158,142 @@ export function usePlayer(address: string | null, pollMs = 0) {
     return () => clearInterval(id);
   }, [load, pollMs]);
 
-  return { profile: data, loading, reload: load, refresh: load };
+  return { profile: data, loading, refresh: load };
 }
 
-export type LadderRow = {
-  rank: number;
-  address: string;
+// ─── Lobbies ────────────────────────────────────────────────────────────────
+
+export type SeatView = {
+  index: number;
+  kind: 'human' | 'bot' | 'empty';
+  /** Simulation id — `house_<i>` for bots, `seat_<i>` for humans. Never an address. */
+  id: string;
   name: string;
+  address: string | null;
+  shortAddress: string | null;
+  skill?: string;
+  botSeed?: number;
+  staked: boolean;
+  submitted: boolean;
+  isYou: boolean;
+  points: number | null;
+  placement: number | null;
+  retired: boolean | null;
+};
+
+export type StandingRow = {
+  index: number;
+  id: string;
+  name: string;
+  kind: 'human' | 'bot';
   points: number;
-  races: number;
-  bestScore: number;
-  retired: number;
-  projectedTickets: number;
+  placement: number;
+  retired: boolean;
+  progress: number;
+  isWinner: boolean;
 };
 
-export type Leaderboard = {
-  ok: boolean;
-  day: {
-    key: string;
-    opensAt: string;
-    closesAt: string;
-    entries: number;
-    poolUnits: string;
-    carryInUnits: string;
-    projectedTickets: number;
-    remainderUnits: string;
-    ticketPriceUnits: string;
-    entryFeeUnits: string;
-    entriesPerTicket: number;
-    settled: boolean;
-  };
-  today: LadderRow[];
-  allTime: Array<{
-    rank: number;
-    address: string;
-    name: string;
-    lifetimePoints: number;
-    racesCompleted: number;
-    bestRaceScore: number;
-    ticketsEarned: number;
-  }>;
-  feared: Array<{ rank: number; address: string; name: string; steals: number }>;
-  recentDays: Array<{
-    key: string;
-    ticketsBought: number;
-    entries: number;
-    winners: Array<{ rank: number; name: string; address: string; tickets: number }>;
-  }>;
-  totals: { players: number; races: number; ticketsMinted: number };
+export type LobbySettlementView = {
+  settledAt: string;
+  winnerSeat: number | null;
+  winnerId: string | null;
+  winnerName: string | null;
+  winnerKind: 'human' | 'bot' | null;
+  potUnits: string;
+  stakedSeats: number;
+  houseWins: boolean;
+  refunded: boolean;
+  standings: StandingRow[];
+  ticketsMinted: number;
+  txHashes: string[];
+  mintError: string | null;
 };
 
-export function useLeaderboard(pollMs = 15_000) {
-  const [data, setData] = useState<Leaderboard | null>(null);
+export type LobbyView = {
+  id: string;
+  state: 'open' | 'locked' | 'settled';
+  seed: number | null;
+  createdAt: string;
+  fillDeadline: string;
+  submitDeadline: string | null;
+  entryFeeUnits: string;
+  ticketPriceUnits: string;
+  drawingId: string;
+  rolloverCount: number;
+  seats: SeatView[];
+  humans: number;
+  bots: number;
+  stakedSeats: number;
+  potUnits: string;
+  seatsTotal: number;
+  mySeat: number | null;
+  mySubmitted: boolean;
+  myBreakdown: ScoreBreakdown | null;
+  settlement: LobbySettlementView | null;
+};
+
+/**
+ * Poll a lobby while it matchmakes or resolves.
+ *
+ * Polling stops on its own once the lobby settles, so a results screen left open
+ * doesn't hammer the API forever. The interval is short because this endpoint is
+ * also what *advances* lobbies — a slow poll is a slow race start.
+ */
+export function useLobby(
+  lobbyId: string | null,
+  address: string | null,
+  opts: { pollMs?: number; enabled?: boolean } = {},
+) {
+  const { pollMs = 1500, enabled = true } = opts;
+  const [lobby, setLobby] = useState<LobbyView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const stopped = useRef(false);
 
   const load = useCallback(async () => {
+    if (!lobbyId) return null;
     try {
-      const res = await fetch('/api/leaderboard');
+      const url = `/api/lobby/${lobbyId}${address ? `?address=${address}` : ''}`;
+      const res = await fetch(url);
       const json = await res.json();
-      if (!json.ok) throw new Error(json.error ?? 'Failed to load the boards');
-      setData(json);
+      if (!json.ok) throw new Error(json.error ?? 'Lobby unavailable');
+      setLobby(json.lobby);
       setError(null);
+      return json.lobby as LobbyView;
     } catch (e) {
       setError((e as Error).message);
+      return null;
     }
-  }, []);
+  }, [lobbyId, address]);
 
   useEffect(() => {
-    load();
-    if (!pollMs) return;
-    const id = setInterval(load, pollMs);
-    return () => clearInterval(id);
-  }, [load, pollMs]);
+    if (!lobbyId || !enabled) return;
+    stopped.current = false;
 
-  return { board: data, error, reload: load };
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      const next = await load();
+      if (stopped.current) return;
+      // Nothing changes after settlement — stop asking.
+      if (next?.state === 'settled') return;
+      timer = setTimeout(tick, pollMs);
+    };
+    tick();
+
+    return () => {
+      stopped.current = true;
+      clearTimeout(timer);
+    };
+  }, [lobbyId, enabled, pollMs, load]);
+
+  return { lobby, error, reload: load, setLobby };
+}
+
+/** A 1Hz clock shared by every countdown on a page, so eight of them cost one timer. */
+export function useNow(intervalMs = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }

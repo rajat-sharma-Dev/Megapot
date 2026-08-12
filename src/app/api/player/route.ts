@@ -1,15 +1,21 @@
 import { NextResponse } from 'next/server';
-import { getOrCreatePlayer, listTickets, getLadder, getDay, toUnits } from '@/lib/db/store';
+import {
+  getOrCreatePlayer, listTickets, listLedger, listLobbiesForPlayer, toUnits,
+} from '@/lib/db/store';
 import { getCurrentDrawing } from '@/lib/megapot/drawing';
-import { allocateTickets, poolToTickets } from '@/lib/vault/allocate';
-import { ensureDailyGrant, entryFeeUnits, FREE_ENTRIES_PER_DAY } from '@/lib/vault/ladder';
-import { dayWindow } from '@/lib/vault/day';
+import { entryFeeUnits, shardsOf, ticketProgress, SHARDS_PER_TICKET } from '@/lib/vault/economy';
+import { advanceLobbies } from '@/lib/vault/lobby';
+import { txUrl } from '@/lib/megapot/addresses';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Player profile: credits, today's standing and projected tickets, and the
- * tickets the vault has already minted to this wallet.
+ * A player's whole state: what they can spend, what they've won and haven't
+ * cashed into a ticket yet, the tickets they hold, and their recent races.
+ *
+ * The shard count is derived here rather than stored, because the ticket price
+ * is live protocol state — a vault worth four shards this morning is worth four
+ * shards this evening only if the price didn't move.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -19,57 +25,72 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: 'A valid address is required' }, { status: 400 });
   }
 
-  const win = dayWindow();
+  await advanceLobbies().catch(() => {});
+
   const drawing = await getCurrentDrawing();
   const feeUnits = entryFeeUnits(drawing.ticketPrice);
 
-  // Landing on the profile is enough to pick up today's free-entry allowance, so
-  // a returning player is never staring at a zero balance with no way forward.
-  let player = await getOrCreatePlayer(address);
-  player = await ensureDailyGrant(player, win.key, feeUnits);
-
-  const [tickets, ladder, day] = await Promise.all([
+  const player = await getOrCreatePlayer(address);
+  const [tickets, ledger, lobbies] = await Promise.all([
     listTickets(player.id),
-    getLadder(win.key),
-    getDay(win.key),
+    listLedger(player.id, 40),
+    listLobbiesForPlayer(player.id, 15),
   ]);
 
-  const poolUnits = toUnits(day?.poolUnits);
-  const { tickets: projectedTickets } = poolToTickets(poolUnits, drawing.ticketPrice);
-  const projection = allocateTickets(
-    ladder.map((e) => ({ playerId: e.playerId, name: e.name, points: e.points })),
-    projectedTickets,
-  );
+  const credits = toUnits(player.creditsUnits);
+  const vault = toUnits(player.vaultUnits);
 
-  const mineIdx = ladder.findIndex((e) => e.playerId === player.id);
-  const mine = mineIdx >= 0 ? ladder[mineIdx] : null;
-  const myProjection = projection.find((a) => a.playerId === player.id);
-
-  // What the next rank up is worth, so the UI can say "12 points to 1 ticket".
-  const above = mineIdx > 0 ? ladder[mineIdx - 1] : null;
+  const history = lobbies
+    .filter((l) => l.state === 'settled' && l.settlement)
+    .map((l) => {
+      const seat = l.seats.find((s) => s.id === player.id);
+      return {
+        lobbyId: l.id,
+        settledAt: l.settlement!.settledAt,
+        points: seat?.points ?? 0,
+        placement: seat?.placement ?? null,
+        retired: seat?.retired ?? null,
+        won: l.settlement!.winnerId === player.id,
+        potUnits: l.settlement!.potUnits,
+        stakedSeats: l.settlement!.stakedSeats,
+        winnerName: l.settlement!.winnerName,
+        houseWins: l.settlement!.houseWins,
+        ticketsMinted: l.settlement!.ticketsMinted,
+      };
+    });
 
   return NextResponse.json({
     ok: true,
-    player,
-    tickets,
-    credits: {
-      units: player.credits,
-      entriesAffordable: feeUnits > 0n ? Number(toUnits(player.credits) / feeUnits) : 0,
+    player: {
+      id: player.id,
+      name: player.name,
+      racesPlayed: player.racesPlayed,
+      racesWon: player.racesWon,
+      racesRetired: player.racesRetired,
+      lifetimePoints: player.lifetimePoints,
+      bestRaceScore: player.bestRaceScore,
+      totalStolen: player.totalStolen,
+      ticketsEarned: player.ticketsEarned,
+      createdAt: player.createdAt,
+    },
+    balance: {
+      creditsUnits: credits.toString(),
+      entriesAffordable: feeUnits > 0n ? Number(credits / feeUnits) : 0,
       entryFeeUnits: feeUnits.toString(),
-      freeEntriesPerDay: Number(FREE_ENTRIES_PER_DAY),
+      lifetimeDepositedUnits: player.lifetimeDepositedUnits,
+      lifetimeWithdrawnUnits: player.lifetimeWithdrawnUnits,
+      lifetimeWageredUnits: player.lifetimeWageredUnits,
+      lifetimeWonUnits: player.lifetimeWonUnits,
     },
-    today: {
-      key: win.key,
-      closesAt: win.closesAt,
-      rank: mineIdx >= 0 ? mineIdx + 1 : null,
-      players: ladder.length,
-      points: mine?.points ?? 0,
-      races: mine?.races ?? 0,
-      bestScore: mine?.bestScore ?? 0,
-      projectedTickets: myProjection?.tickets ?? 0,
-      pointsToNextRank: above ? Math.max(1, above.points - (mine?.points ?? 0) + 1) : null,
-      poolUnits: poolUnits.toString(),
-      projectedTicketsTotal: projectedTickets,
+    vault: {
+      units: vault.toString(),
+      shards: shardsOf(vault, feeUnits),
+      shardsPerTicket: Number(SHARDS_PER_TICKET),
+      progress: ticketProgress(vault, drawing.ticketPrice),
+      ticketPriceUnits: drawing.ticketPrice.toString(),
     },
+    tickets: tickets.map((t) => ({ ...t, explorerUrl: txUrl(t.txHash) })),
+    ledger: ledger.map((e) => ({ ...e, explorerUrl: e.txHash ? txUrl(e.txHash) : null })),
+    history,
   });
 }

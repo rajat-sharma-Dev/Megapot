@@ -2,255 +2,439 @@
 
 import Link from 'next/link';
 import { useWallet } from '@/lib/wallet/useWallet';
-import { useJackpot, usePlayer, useLeaderboard } from '@/lib/hooks';
+import { useJackpot, usePlayer } from '@/lib/hooks';
+import { useSound } from '@/lib/audio/SoundProvider';
 import { Nav } from '@/components/Nav';
+import { DemoRace } from '@/components/DemoRace';
 import { JackpotPanel } from '@/components/JackpotPanel';
-import { PoolMeter, LadderStanding } from '@/components/Progress';
-import { DayCountdown } from '@/components/DrawCountdown';
+import { ShardMeter } from '@/components/ShardMeter';
 import { formatUsdc } from '@/lib/format';
 
-export default function Hub() {
+export default function Home() {
   const wallet = useWallet();
   const { jackpot, error } = useJackpot();
   const { profile } = usePlayer(wallet.address);
-  const { board } = useLeaderboard(20_000);
+  const { play } = useSound();
 
-  const day = board?.day;
-  const top = board?.today.slice(0, 5) ?? [];
+  const fee = jackpot?.economy.entryFeeUnits;
+  const pot = jackpot?.economy.fullPotUnits;
 
   return (
     <>
-      <Nav address={wallet.address} name={wallet.name} />
+      <Nav profile={profile} />
 
-      <main className="mx-auto max-w-6xl px-5 pb-24 pt-12">
-        {/* ── Hero ───────────────────────────────────────────────────── */}
-        <section className="rise">
-          <div className="chip chip-live mb-5">
+      {/* ── Hero ─────────────────────────────────────────────────────────── */}
+      <section className="relative overflow-hidden border-b border-white/[0.06]">
+        <DemoRace className="opacity-[0.34]" />
+        {/* The race behind the type has to lose the fight with the type. */}
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_70%_at_20%_50%,rgba(4,6,12,0.96),rgba(4,6,12,0.72)_55%,transparent)]" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-[#04060c] to-transparent" />
+
+        <div className="relative mx-auto max-w-6xl px-4 pb-20 pt-16 sm:px-5 sm:pb-28 sm:pt-24">
+          <div className="chip chip-live rise mb-6">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
-            Megapot Prize Track · Summer Game Jam 2026
+            Live on {jackpot?.network === 'mainnet' ? 'Base' : 'Base Sepolia'}
           </div>
 
           <h1
-            className="max-w-3xl text-4xl font-extrabold leading-[1.08] tracking-tight sm:text-6xl"
-            style={{ fontFamily: 'var(--font-display)' }}
+            className="display rise max-w-4xl text-[2.6rem] leading-[0.95] sm:text-7xl lg:text-8xl"
+            style={{ animationDelay: '60ms' }}
           >
-            Race for the pot.
+            FIVE RACERS.
             <br />
-            <span className="text-[var(--accent)]">Climb for the ticket.</span>
+            <span className="text-[var(--gold)] glow-gold">ONE REAL TICKET.</span>
           </h1>
 
-          <p className="mt-5 max-w-2xl text-lg leading-relaxed text-slate-400">
-            Five racers, a track built fresh every time, and a boost tank you have to keep
-            refuelling. Every entry fee is pooled — and when the day closes, the pool buys real
-            Megapot tickets and hands them to the top of the leaderboard.
+          <p
+            className="rise mt-6 max-w-xl text-lg leading-relaxed text-slate-300"
+            style={{ animationDelay: '130ms' }}
+          >
+            Everyone stakes a fifth of a Megapot lottery ticket. One driver takes the whole pot —
+            and it isn&apos;t whoever crosses the line first. It&apos;s whoever{' '}
+            <span className="font-semibold text-white">scores</span> most.
           </p>
 
-          <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link href="/race" className="btn btn-primary px-7 py-3.5 text-base">
-              Race now
+          <div
+            className="rise mt-9 flex flex-wrap items-center gap-3"
+            style={{ animationDelay: '200ms' }}
+          >
+            <Link
+              href="/play"
+              onClick={() => play('confirm')}
+              className="btn btn-primary px-8 py-4 text-base"
+            >
+              Enter a race
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                <path
+                  d="M5 12h14M13 6l6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
             </Link>
-            <Link href="/leaderboard" className="btn btn-ghost px-6 py-3.5 text-base">
-              Today&apos;s ladder
-            </Link>
+            <a href="#how" onClick={() => play('click')} className="btn btn-ghost px-6 py-4 text-base">
+              How it works
+            </a>
           </div>
 
-          <p className="mt-4 text-sm text-slate-500">
-            No signup. A wallet is created for you the moment you land here, and your first{' '}
-            {profile?.credits.freeEntriesPerDay ?? 25} entries a day are free.
-          </p>
-        </section>
-
-        {/* ── The clock, the pool, your standing ─────────────────────── */}
-        {day && (
-          <section className="mt-12">
-            <div className="card relative overflow-hidden p-6 rise">
-              <div className="absolute inset-x-0 top-0 h-px shimmer" />
-              <div className="grid gap-6 lg:grid-cols-3">
-                <div>
-                  <div className="stat-label">Ladder resets in</div>
-                  <div
-                    className="num mt-1.5 text-4xl font-extrabold"
-                    style={{ fontFamily: 'var(--font-display)' }}
-                  >
-                    <DayCountdown closesAt={day.closesAt} />
-                  </div>
-                  <p className="mt-2 text-xs text-slate-500">
-                    17:00 UTC — the same moment Megapot draws. Board wipes, everyone starts level.
-                  </p>
-                </div>
-
-                <PoolMeter
-                  poolUnits={day.poolUnits}
-                  ticketPriceUnits={day.ticketPriceUnits}
-                  projectedTickets={day.projectedTickets}
-                  entries={day.entries}
-                />
-
-                <LadderStanding
-                  rank={profile?.today.rank ?? null}
-                  players={profile?.today.players ?? 0}
-                  points={profile?.today.points ?? 0}
-                  projectedTickets={profile?.today.projectedTickets ?? 0}
-                  pointsToNextRank={profile?.today.pointsToNextRank ?? null}
-                />
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* ── Live state + top of the board ──────────────────────────── */}
-        <section className="mt-6 grid gap-5 lg:grid-cols-[1.15fr_1fr]">
-          <JackpotPanel jackpot={jackpot} error={error} />
-
-          <div className="card p-6">
-            <div className="mb-5 flex items-center justify-between">
-              <div className="chip chip-live">Top of the ladder</div>
-              <Link href="/leaderboard" className="text-xs text-slate-500 hover:text-slate-300">
-                full board →
-              </Link>
-            </div>
-
-            {top.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-500">
-                Nobody has raced today yet. First run takes the top spot.
-              </p>
-            ) : (
-              <div className="stagger space-y-2">
-                {top.map((row) => (
-                  <div
-                    key={row.address}
-                    className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 ${
-                      row.address === wallet.address?.toLowerCase()
-                        ? 'you-row border-[var(--accent)]/40 bg-[var(--accent)]/[0.06]'
-                        : 'border-white/[0.07] bg-white/[0.02]'
-                    }`}
-                  >
-                    <span className="num w-6 text-sm font-bold text-slate-500">{row.rank}</span>
-                    <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-200">
-                      {row.name}
-                    </span>
-                    <span className="num text-sm font-bold text-slate-100">
-                      {row.points.toLocaleString()}
-                    </span>
-                    {row.projectedTickets > 0 && (
-                      <span className="chip chip-gold">{row.projectedTickets} 🎟</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-6 grid grid-cols-3 gap-3 border-t border-white/[0.07] pt-5">
-              <Stat label="Races" value={profile?.player.racesCompleted ?? 0} />
-              <Stat label="Best run" value={profile?.player.bestRaceScore ?? 0} />
-              <Stat label="Tickets won" value={profile?.player.ticketsEarned ?? 0} accent />
-            </div>
+          {/* The economy in one line, live. */}
+          <div
+            className="rise mt-10 flex flex-wrap items-center gap-x-7 gap-y-3 text-sm"
+            style={{ animationDelay: '270ms' }}
+          >
+            <Fact label="Entry" value={fee ? formatUsdc(fee) : '—'} tone="accent" />
+            <Fact label="Full pot" value={pot ? formatUsdc(pot) : '—'} tone="gold" />
+            <Fact
+              label="Jackpot"
+              value={jackpot ? `$${jackpot.prizePoolFormatted}` : '—'}
+              tone="gold"
+            />
+            <Fact label="Race length" value="~70s" />
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* ── The mechanic, explained ────────────────────────────────── */}
+      <main className="mx-auto max-w-6xl px-4 pb-24 sm:px-5">
+        {/* ── The one rule that makes this a game ────────────────────────── */}
         <section className="mt-14">
-          <div className="card overflow-hidden p-7">
-            <div className="chip chip-gold mb-5">How it works</div>
-            <h2
-              className="text-2xl font-bold tracking-tight sm:text-3xl"
-              style={{ fontFamily: 'var(--font-display)' }}
-            >
-              Five entries buy one real ticket
+          <div className="panel panel-lit overflow-hidden p-7 sm:p-9">
+            <div className="chip chip-violet mb-5">The rule</div>
+            <h2 className="display max-w-2xl text-2xl leading-tight sm:text-4xl">
+              Winning the sprint is not winning the race.
             </h2>
-            <p className="mt-3 max-w-2xl text-slate-400">
-              A Megapot ticket costs{' '}
-              <span className="num font-semibold text-slate-200">
-                {day ? formatUsdc(day.ticketPriceUnits) : '—'}
-              </span>
-              , so an entry costs a fifth of that —{' '}
-              <span className="num font-semibold text-[var(--cyan)]">
-                {day ? formatUsdc(day.entryFeeUnits) : '—'}
-              </span>
-              . Nobody can buy an advantage: every entry costs the same and buys the same thing,
-              a chance to score. Rank is the only lever, and rank is earned by driving.
+            <p className="mt-4 max-w-2xl leading-relaxed text-slate-400">
+              Finish position is worth points, and it is worth a lot of them — but a full run scores
+              around 140, and the gap between first and third is 35. One good section of point cells
+              covers it. So the driver who blasted to the front through an empty lane loses to the
+              driver who came third and swept the track.
             </p>
 
-            <div className="mt-7 grid gap-4 sm:grid-cols-4">
-              <Step n="01" title="Enter" body="A fifth of a ticket, straight into today's shared pool." />
-              <Step n="02" title="Race" body="Collect point cells, grab fuel cans, hold boost to recover from hits and close gaps." />
-              <Step n="03" title="Climb" body="Points stack up on today's ladder. Play as many races as you like — only your total matters." />
-              <Step n="04" title="Collect" body="At 17:00 UTC the pool buys tickets and mints them to the top of the board. Higher rank, more tickets." />
+            <div className="mt-8 grid gap-4 sm:grid-cols-2">
+              <ScoreCard
+                place="1st"
+                verdict="loses the pot"
+                tone="loser"
+                rows={[
+                  ['Point cells', 40],
+                  ['Finish + position', 85],
+                  ['Clean run', 0],
+                  ['Afterburner', 6],
+                ]}
+                total={131}
+              />
+              <ScoreCard
+                place="3rd"
+                verdict="takes the pot"
+                tone="winner"
+                rows={[
+                  ['Point cells', 90],
+                  ['Finish + position', 50],
+                  ['Clean run', 20],
+                  ['Afterburner', 11],
+                ]}
+                total={171}
+              />
             </div>
 
-            <div className="mt-7 rounded-2xl border border-white/[0.07] bg-black/25 p-6">
-              <div className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
-                Why race instead of just buying a ticket?
+            <p className="mt-6 text-sm text-slate-500">
+              Which is why every race stays live to the last corner: nobody knows who won until the
+              scores land.
+            </p>
+          </div>
+        </section>
+
+        {/* ── How it works ───────────────────────────────────────────────── */}
+        <section id="how" className="mt-8 scroll-mt-24">
+          <div className="panel panel-lit p-7 sm:p-9">
+            <div className="chip chip-gold mb-5">How it works</div>
+            <h2 className="display text-2xl leading-tight sm:text-4xl">
+              Five stakes in. One ticket out.
+            </h2>
+
+            <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <Step
+                n="01"
+                title="Deposit"
+                body="Connect your wallet and send USDC. It's a plain transfer — no approvals, no custom contract, and you can withdraw it whenever you like."
+              />
+              <Step
+                n="02"
+                title="Get matched"
+                body="Five seats, filled at random from whoever is queueing. Empty seats are taken by the house, which stakes its own float and races to keep it."
+              />
+              <Step
+                n="03"
+                title="Race"
+                body="~70 seconds. Collect point cells, refill your boost tank, dodge traps, claim the orb, and steal at the checkpoints."
+              />
+              <Step
+                n="04"
+                title="Take the pot"
+                body="Highest score takes every shard staked. Five shards is a whole Megapot ticket, minted straight to your wallet."
+                tone="gold"
+              />
+            </div>
+
+            {/* Shard maths, drawn rather than described. */}
+            <div className="inset mt-7 p-6">
+              <div className="flex flex-wrap items-center justify-between gap-5">
+                <div>
+                  <div className="eyebrow">The shard maths</div>
+                  <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-400">
+                    An entry costs exactly a fifth of a ticket, so a full five-seat pot{' '}
+                    <span className="text-slate-200">is</span> a ticket. Win one and it mints
+                    immediately. Win a smaller pot and the shards stack until they make a whole one —
+                    nothing is ever rounded away.
+                  </p>
+                </div>
+                <div className="w-full max-w-[220px]">
+                  <ShardMeter shards={5} perTicket={5} size="lg" />
+                  <div className="mt-2 flex items-center justify-between text-xs">
+                    <span className="num text-slate-500">
+                      {fee ? formatUsdc(fee) : '—'} × 5
+                    </span>
+                    <span className="display font-semibold text-[var(--gold)]">= 1 ticket 🎟</span>
+                  </div>
+                </div>
               </div>
-              <p className="text-sm leading-relaxed text-slate-400">
-                Because a fifth of the price gets you a shot at a whole ticket — and the better you
-                drive, the more of the pool comes your way. Buying direct from Megapot costs you
-                five times as much per ticket and rewards nothing but your wallet. The tickets here
-                are the same tickets, in the same draw, on the same contract; the difference is that
-                you can be good at getting them.
-              </p>
             </div>
           </div>
         </section>
 
-        {/* ── Integration transparency ───────────────────────────────── */}
-        {jackpot && (
-          <section className="mt-8">
-            <div className="card p-6">
-              <div className="chip mb-4">On-chain</div>
-              <div className="grid gap-5 sm:grid-cols-3">
+        {/* ── What's on the track ────────────────────────────────────────── */}
+        <section className="mt-8">
+          <div className="panel p-7 sm:p-9">
+            <div className="chip mb-5">On the track</div>
+            <h2 className="display text-2xl leading-tight sm:text-3xl">
+              Everything that changes your score
+            </h2>
+
+            <div className="mt-7 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <Legend color="var(--accent)" title="Point cells" body="+10 each. The main currency, and the reason to take the harder line." />
+              <Legend color="var(--cyan)" title="Fuel cans" body="+32 fuel. Boost is a tank, not a charge — no cans, no comeback." />
+              <Legend color="#f59e0b" title="Score traps" body="−12. They look like point cells. Grabbing blindly costs you." />
+              <Legend color="var(--gold)" title="Jackpot Orb" body="80+, one claimant only — and it pays nothing unless you carry it to the line. Unclaimed, it rolls over and grows." />
+              <Legend color="var(--violet)" title="Steal zones" body="Overtake at a checkpoint and take 15 points off the racer you passed." />
+              <Legend color="var(--danger)" title="Hard barriers" body="Stun, lost speed, and a quarter of your fuel tank spilled." />
+            </div>
+          </div>
+        </section>
+
+        {/* ── Live chain state ───────────────────────────────────────────── */}
+        <section className="mt-8 grid gap-5 lg:grid-cols-[1.1fr_1fr]">
+          <JackpotPanel jackpot={jackpot} error={error} />
+
+          <div className="panel p-7">
+            <div className="chip mb-5">Real tickets, not points</div>
+            <p className="text-sm leading-relaxed text-slate-400">
+              A shard vault that fills buys a ticket from Megapot&apos;s own contract, with the
+              protocol picking the numbers and the ticket NFT minted directly to your address. The
+              treasury never holds it, so there is nothing to trust and nothing to claim later —
+              it&apos;s in your wallet the moment it exists.
+            </p>
+
+            {jackpot && (
+              <div className="mt-6 grid gap-4 border-t border-white/[0.07] pt-5 sm:grid-cols-2">
                 <div>
                   <div className="stat-label">Jackpot contract</div>
                   <a
                     href={`https://${jackpot.network === 'mainnet' ? '' : 'sepolia.'}basescan.org/address/${jackpot.jackpotAddress}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="num mt-1 block truncate text-sm text-[var(--accent)] hover:underline"
+                    className="num mt-1 block truncate text-xs text-[var(--accent)] hover:underline"
                   >
                     {jackpot.jackpotAddress}
                   </a>
                 </div>
                 <div>
-                  <div className="stat-label">Referral fee earned</div>
-                  <div className="num mt-1 text-sm text-slate-300">
-                    {jackpot.referralFeePct.toFixed(1)}% of ticket · {jackpot.referralWinSharePct.toFixed(1)}% of wins
+                  <div className="stat-label">Ball pool this round</div>
+                  <div className="num mt-1 text-xs text-slate-300">
+                    normals 1–{jackpot.ballMax} · bonusball 1–{jackpot.bonusballMax}
+                  </div>
+                </div>
+                <div>
+                  <div className="stat-label">House float</div>
+                  <div className="num mt-1 text-xs text-slate-300">
+                    {formatUsdc(jackpot.economy.houseFloatUnits)} — what the house has to lose
                   </div>
                 </div>
                 <div>
                   <div className="stat-label">Network</div>
-                  <div className="mt-1 text-sm text-slate-300">
-                    {jackpot.network === 'mainnet' ? 'Base mainnet' : 'Base Sepolia (testnet)'} · chain {jackpot.chainId}
+                  <div className="mt-1 text-xs text-slate-300">
+                    {jackpot.network === 'mainnet' ? 'Base mainnet' : 'Base Sepolia'} · chain{' '}
+                    <span className="num">{jackpot.chainId}</span>
                   </div>
                 </div>
               </div>
-            </div>
-          </section>
-        )}
+            )}
+          </div>
+        </section>
+
+        {/* ── Close ──────────────────────────────────────────────────────── */}
+        <section className="mt-12">
+          <div className="panel panel-lit panel-gold relative overflow-hidden p-9 text-center">
+            <div className="absolute inset-x-0 top-0 h-px shimmer" />
+            <h2 className="display text-2xl leading-tight sm:text-4xl">
+              The cheapest way to get a Megapot ticket
+              <br />
+              <span className="text-[var(--gold)]">is to be good at getting one.</span>
+            </h2>
+            <p className="mx-auto mt-4 max-w-xl text-slate-400">
+              Buying direct costs you a whole ticket. Racing costs a fifth of one and gives you a
+              shot at the other four.
+            </p>
+            <Link
+              href="/play"
+              onClick={() => play('confirm')}
+              className="btn btn-gold mt-7 px-9 py-4 text-base"
+            >
+              Take a seat
+            </Link>
+          </div>
+        </section>
+
+        <footer className="mt-12 flex flex-wrap items-center justify-between gap-4 border-t border-white/[0.06] pt-7 text-xs text-slate-600">
+          <span>
+            Built on{' '}
+            <a
+              href="https://docs.megapot.io"
+              target="_blank"
+              rel="noreferrer"
+              className="text-slate-400 hover:text-slate-200"
+            >
+              Megapot
+            </a>{' '}
+            — on-chain lottery on Base.
+          </span>
+          <span>
+            Play responsibly. This awards real lottery tickets where the network is mainnet.
+          </span>
+        </footer>
       </main>
     </>
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+function Fact({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: 'accent' | 'gold';
+}) {
   return (
-    <div>
-      <div className="stat-label">{label}</div>
-      <div className={`num mt-1 text-2xl font-bold ${accent ? 'text-[var(--gold)]' : 'text-slate-100'}`}>
-        {value.toLocaleString()}
+    <div className="flex items-baseline gap-2">
+      <span className="stat-label">{label}</span>
+      <span
+        className={`num font-bold ${
+          tone === 'gold'
+            ? 'text-[var(--gold)]'
+            : tone === 'accent'
+              ? 'text-[var(--accent)]'
+              : 'text-slate-200'
+        }`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function Step({
+  n,
+  title,
+  body,
+  tone,
+}: {
+  n: string;
+  title: string;
+  body: string;
+  tone?: 'gold';
+}) {
+  return (
+    <div className="panel-hover rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5">
+      <div
+        className={`num text-xs font-bold ${tone === 'gold' ? 'text-[var(--gold)]' : 'text-[var(--accent)]'}`}
+      >
+        {n}
+      </div>
+      <div className="display mt-2 font-semibold text-slate-100">{title}</div>
+      <p className="mt-2 text-sm leading-relaxed text-slate-400">{body}</p>
+    </div>
+  );
+}
+
+function Legend({ color, title, body }: { color: string; title: string; body: string }) {
+  return (
+    <div className="flex gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+      <div
+        className="mt-1 h-3 w-3 shrink-0 rotate-45 rounded-[3px]"
+        style={{ background: color, boxShadow: `0 0 14px ${color}` }}
+      />
+      <div>
+        <div className="display text-sm font-semibold text-slate-100">{title}</div>
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">{body}</p>
       </div>
     </div>
   );
 }
 
-function Step({ n, title, body }: { n: string; title: string; body: string }) {
+/**
+ * The two score sheets side by side.
+ *
+ * Numbers chosen to be representative rather than cherry-picked: 40 points of
+ * cells is four of the seven-to-ten on a track, and 90 is nine of them.
+ */
+function ScoreCard({
+  place,
+  verdict,
+  rows,
+  total,
+  tone,
+}: {
+  place: string;
+  verdict: string;
+  rows: Array<[string, number]>;
+  total: number;
+  tone: 'winner' | 'loser';
+}) {
+  const winner = tone === 'winner';
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-5">
-      <div className="num text-xs font-bold text-[var(--accent)]">{n}</div>
-      <div className="mt-2 font-bold text-slate-100">{title}</div>
-      <p className="mt-1.5 text-sm leading-relaxed text-slate-400">{body}</p>
+    <div
+      className={`rounded-2xl border p-5 ${
+        winner
+          ? 'border-[var(--gold)]/40 bg-[var(--gold)]/[0.05]'
+          : 'border-white/[0.07] bg-white/[0.02]'
+      }`}
+    >
+      <div className="flex items-baseline justify-between">
+        <span className="display text-2xl font-bold text-slate-100">{place}</span>
+        <span className={`chip ${winner ? 'chip-gold' : ''}`}>{verdict}</span>
+      </div>
+
+      <div className="mt-4 space-y-1.5">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between text-sm">
+            <span className="text-slate-400">{label}</span>
+            <span className={`num ${value === 0 ? 'text-slate-600' : 'text-slate-200'}`}>
+              +{value}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 flex items-center justify-between border-t border-white/[0.07] pt-3">
+        <span className="display text-sm font-semibold text-slate-200">Total</span>
+        <span
+          className={`num text-2xl font-bold ${winner ? 'text-[var(--gold)]' : 'text-slate-300'}`}
+        >
+          {total}
+        </span>
+      </div>
     </div>
   );
 }

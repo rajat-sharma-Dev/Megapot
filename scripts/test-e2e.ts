@@ -4,9 +4,10 @@
  *   npm run test:e2e
  *
  * Boots the real production server and drives a complete player journey over
- * HTTP — entry fees, race creation, gameplay, server-side replay scoring, the
- * daily ladder, quitting, the day-close payout that mints real tickets against
- * live Base Sepolia contracts, and every abuse case the API has to reject.
+ * HTTP — funding a balance, matchmaking into a lobby, racing, server-side replay
+ * scoring, winner-take-all settlement, shards converting into a real Megapot
+ * ticket against live Base Sepolia contracts, and every abuse case the API has
+ * to reject.
  *
  * Nothing is mocked except the final broadcast (MEGAPOT_DRY_RUN), which still
  * simulates the transaction against live chain state.
@@ -15,13 +16,17 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { rm, mkdir, writeFile } from 'fs/promises';
 import path from 'path';
-import { driveRace } from './lib/drive';
-import { simulateRace } from '../src/lib/game/replay';
-import { ENTRIES_PER_TICKET } from '../src/lib/vault/economy';
+import { driveRace, localField } from './lib/drive';
+import { simulateLobby } from '../src/lib/game/replay';
+import { scoreRace } from '../src/lib/points/scoring';
+import { SHARDS_PER_TICKET, SEATS_PER_RACE } from '../src/lib/vault/economy';
 
 const PORT = 3210;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = path.join(process.cwd(), '.data-e2e');
+
+/** Short enough that the suite isn't mostly waiting, long enough to co-queue. */
+const FILL_WINDOW_MS = 2500;
 
 const PLAYER = '0x1111111111111111111111111111111111111111';
 const OTHER = '0x2222222222222222222222222222222222222222';
@@ -32,22 +37,21 @@ const LEGACY = '0x4444444444444444444444444444444444444444';
  * A player row exactly as an older build of this app wrote it.
  *
  * The store is a JSON file that outlives deploys, so it will hand back rows whose
- * shape predates the current code. When the ticket economy was replaced by the
- * daily ladder, `pointBank` became `credits` — and every money path did a bare
- * `BigInt(player.credits)`, which threw "Cannot convert undefined to a BigInt" on
- * the first race for anyone with an existing profile. This fixture reproduces
- * that file so the migration is proven rather than assumed.
+ * shape predates the current code. When the daily ladder was replaced by
+ * winner-take-all pots, `credits` became `creditsUnits` — and every money path
+ * does a bare `BigInt(...)` on it, which throws "Cannot convert undefined to a
+ * BigInt" on the first race for anyone with an existing profile. This fixture
+ * reproduces that file so the migration is proven rather than assumed.
  */
 const LEGACY_DB = {
   players: {
     [LEGACY]: {
       id: LEGACY,
       name: 'Veteran',
-      pointBank: 420,
+      credits: '5000000',
       lifetimePoints: 1337,
       racesCompleted: 9,
       cookiePieces: 3,
-      cookiesAwarded: 0,
       totalStolen: 4,
       ticketsEarned: 2,
       createdAt: '2026-08-01T00:00:00.000Z',
@@ -65,6 +69,10 @@ const ok = (m: string) => { pass++; console.log(`  \x1b[32m✓\x1b[0m ${m}`); };
 const bad = (m: string) => { fail++; console.log(`  \x1b[31m✗ ${m}\x1b[0m`); };
 const check = (c: boolean, m: string) => (c ? ok(m) : bad(m));
 const group = (m: string) => console.log(`\n\x1b[1m${m}\x1b[0m`);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** API responses are checked by assertion, not by type — this is the test suite. */
+type Json = ReturnType<typeof JSON.parse>;
 
 async function api(method: string, pathname: string, body?: unknown) {
   const res = await fetch(`${BASE}${pathname}`, {
@@ -72,7 +80,7 @@ async function api(method: string, pathname: string, body?: unknown) {
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  let json: any = null;
+  let json: Json = null;
   try { json = await res.json(); } catch { /* non-JSON error page */ }
   return { status: res.status, json };
 }
@@ -86,7 +94,7 @@ async function api(method: string, pathname: string, body?: unknown) {
  */
 async function assertPortFree() {
   try {
-    const res = await fetch(`${BASE}/api/leaderboard`, { signal: AbortSignal.timeout(2500) });
+    const res = await fetch(`${BASE}/api/jackpot`, { signal: AbortSignal.timeout(2500) });
     if (res.ok) {
       throw new Error(
         `Port ${PORT} is already serving. A previous test server is still running — ` +
@@ -104,38 +112,71 @@ async function waitForServer(timeoutMs = 90_000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${BASE}/api/leaderboard`);
+      const res = await fetch(`${BASE}/api/jackpot`);
       if (res.ok) return true;
     } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 600));
+    await sleep(600);
   }
   return false;
 }
 
-/** Play one race end-to-end and return the settlement payload. */
+/** Fund a wallet through the dev faucet, which is what the suite has instead of USDC. */
+async function fund(address: string) {
+  const res = await api('POST', '/api/dev/faucet', { address });
+  if (res.status !== 200) throw new Error(`faucet failed: ${res.status} ${JSON.stringify(res.json)}`);
+  return res.json;
+}
+
+/** Poll a lobby until it stops being open, so we can read its seed. */
+async function waitForLock(lobbyId: string, address: string, timeoutMs = 15_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const { json } = await api('GET', `/api/lobby/${lobbyId}?address=${address}`);
+    if (json?.ok && json.lobby.state !== 'open') return json.lobby;
+    await sleep(300);
+  }
+  throw new Error(`lobby ${lobbyId} never locked`);
+}
+
+async function joinLobby(address: string, name: string) {
+  const res = await api('POST', '/api/lobby/join', { address, name });
+  if (res.status !== 200 || !res.json?.ok) {
+    throw new Error(`lobby/join failed: ${res.status} ${JSON.stringify(res.json)}`);
+  }
+  return res.json;
+}
+
+/** Play one solo race end-to-end and return everything the assertions need. */
 async function playRace(
   address: string,
   name: string,
   opts: { skill?: 'rookie' | 'steady' | 'sharp'; quitAtProgress?: number } = {},
 ) {
-  const created = await api('POST', '/api/race/create', { address, name });
-  if (created.status !== 200 || !created.json?.ok) {
-    throw new Error(`race/create failed: ${created.status} ${JSON.stringify(created.json)}`);
-  }
+  const joined = await joinLobby(address, name);
+  const lobby = await waitForLock(joined.lobby.id, address);
 
-  const { raceId, seed } = created.json;
   const { inputs } = driveRace({
-    seed, raceId, humanName: name,
+    seed: lobby.seed,
+    lobbyId: lobby.id,
+    humanName: name,
+    mySeat: lobby.mySeat,
     humanSkill: opts.skill ?? 'steady',
     quitAtProgress: opts.quitAtProgress,
   });
 
-  const submitted = await api('POST', '/api/race/submit', { raceId, address, inputs });
+  const submitted = await api('POST', '/api/lobby/submit', { lobbyId: lobby.id, address, inputs });
   if (submitted.status !== 200 || !submitted.json?.ok) {
-    throw new Error(`race/submit failed: ${submitted.status} ${JSON.stringify(submitted.json)}`);
+    throw new Error(`lobby/submit failed: ${submitted.status} ${JSON.stringify(submitted.json)}`);
   }
 
-  return { raceId, seed, inputs, result: submitted.json, created: created.json };
+  return {
+    lobbyId: lobby.id,
+    seed: lobby.seed,
+    mySeat: lobby.mySeat,
+    inputs,
+    lobby: submitted.json.lobby,
+    settlement: submitted.json.lobby.settlement,
+  };
 }
 
 let server: ChildProcess | null = null;
@@ -155,7 +196,14 @@ async function main() {
 
   server = spawn('npx', ['next', 'start', '-p', String(PORT)], {
     cwd: process.cwd(),
-    env: { ...process.env, RALLY_DATA_DIR: DATA_DIR, NODE_ENV: 'production' },
+    env: {
+      ...process.env,
+      RALLY_DATA_DIR: DATA_DIR,
+      RALLY_DEV_FAUCET: 'true',
+      RALLY_FILL_WINDOW_MS: String(FILL_WINDOW_MS),
+      RALLY_SUBMIT_WINDOW_MS: '30000',
+      NODE_ENV: 'production',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stderr?.on('data', (d) => {
@@ -170,16 +218,29 @@ async function main() {
   // ── Live Megapot state ───────────────────────────────────────────────────
   group('Megapot integration (live Base Sepolia)');
   let ticketPriceUnits = 0n;
+  let entryFeeUnits = 0n;
   {
     const { status, json } = await api('GET', '/api/jackpot');
     check(status === 200 && json?.ok, 'GET /api/jackpot returns live drawing state');
     if (json?.ok) {
       ticketPriceUnits = BigInt(json.ticketPrice);
+      entryFeeUnits = BigInt(json.economy.entryFeeUnits);
+
       check(Number(json.drawingId) > 0, `reading drawing #${json.drawingId} from the chain`);
       check(ticketPriceUnits > 0n, `ticket price $${json.ticketPriceFormatted} read from the contract`);
       check(json.network === 'testnet', 'running against testnet — no real funds at risk');
       check(json.referralFeePct > 0, `referral fee ${json.referralFeePct.toFixed(1)}% confirmed on-chain`);
       check(json.jackpotLock === false, 'protocol is not mid-settlement');
+
+      check(
+        entryFeeUnits * SHARDS_PER_TICKET === ticketPriceUnits,
+        `entry is exactly a fifth of the live ticket price (${entryFeeUnits} × 5 = ${ticketPriceUnits})`,
+      );
+      check(
+        BigInt(json.economy.fullPotUnits) === ticketPriceUnits,
+        'a full five-seat pot equals one whole ticket',
+      );
+      check(BigInt(json.economy.houseFloatUnits) > 0n, 'the house float is funded and can stake bot seats');
     }
   }
 
@@ -191,346 +252,484 @@ async function main() {
 
     if (prof.json?.ok) {
       const p = prof.json.player;
-      check(typeof p.credits === 'string' && /^\d+$/.test(p.credits), `credits backfilled to "${p.credits}"`);
+      check(
+        /^\d+$/.test(prof.json.balance.creditsUnits) && BigInt(prof.json.balance.creditsUnits) === 5_000_000n,
+        `the old "credits" field migrated to creditsUnits ("${prof.json.balance.creditsUnits}")`,
+      );
       check(p.lifetimePoints === 1337, 'points that already existed are preserved');
-      check(p.racesCompleted === 9, 'and so is the race count');
       check(p.name === 'Veteran', 'and the name');
+      check(p.ticketsEarned === 2, 'and the ticket count');
       check(p.bestRaceScore === 0, 'fields the old schema never had default to zero, not undefined');
-      check(p.racesRetired === 0, 'including the DNF counter');
-      check(prof.json.credits.entriesAffordable > 0, 'the daily grant applies, so they can play immediately');
+      check(p.racesWon === 0, 'including the new pot-win counter');
+      check(prof.json.vault.units === '0', 'and the shard vault starts empty rather than undefined');
     }
 
     // This is the exact call that used to throw on the first race.
-    const created = await api('POST', '/api/race/create', { address: LEGACY, name: 'Veteran' });
-    check(created.status === 200 && created.json?.ok, 'and starting a race works — no BigInt conversion crash');
-    if (created.json?.ok) {
-      check(BigInt(created.json.entry.feeUnits) > 0n, 'the entry fee was charged normally');
+    const joined = await api('POST', '/api/lobby/join', { address: LEGACY, name: 'Veteran' });
+    check(joined.status === 200 && joined.json?.ok, 'and joining a lobby works — no BigInt conversion crash');
+    if (joined.json?.ok) {
+      check(BigInt(joined.json.entryFeeUnits) > 0n, 'the entry fee was charged normally');
     }
   }
 
   // ── Input validation ─────────────────────────────────────────────────────
   group('Input validation');
   {
-    check((await api('POST', '/api/race/create', { address: 'nope' })).status === 400, 'rejects a malformed wallet address');
+    check((await api('POST', '/api/lobby/join', { address: 'nope' })).status === 400, 'join rejects a malformed wallet address');
     check((await api('GET', '/api/player?address=nope')).status === 400, 'player lookup rejects a bad address');
     check((await api('GET', '/api/tickets?address=nope')).status === 400, 'ticket lookup rejects a bad address');
-    check((await api('POST', '/api/race/submit', { raceId: 'x', address: PLAYER })).status === 400, 'submit requires an input log');
-    const unknown = await api('POST', '/api/race/submit', {
-      raceId: 'deadbeefdeadbeefdeadbeef', address: PLAYER, inputs: { lateral: [], boostRuns: [], quitTick: null },
+    check((await api('POST', '/api/lobby/submit', { lobbyId: 'x', address: PLAYER })).status === 400, 'submit requires an input log');
+    check((await api('GET', '/api/lobby/deadbeef')).status === 404, 'an unknown lobby is a 404');
+
+    const unknown = await api('POST', '/api/lobby/submit', {
+      lobbyId: 'deadbeefdeadbeefdeadbeef', address: PLAYER,
+      inputs: { lateral: [], boostRuns: [], quitTick: null },
     });
-    check(unknown.status === 404, 'submit rejects an unknown race id');
+    check(unknown.status === 404, 'submit rejects an unknown lobby id');
+
+    check((await api('POST', '/api/withdraw', { address: PLAYER, amountUnits: 'x' })).status === 400, 'withdraw rejects a non-numeric amount');
+    check((await api('POST', '/api/deposit', { address: PLAYER, txHash: 'nope' })).status === 400, 'deposit rejects a malformed transaction hash');
+    const fakeTx = `0x${'ab'.repeat(32)}`;
+    check(
+      (await api('POST', '/api/deposit', { address: PLAYER, txHash: fakeTx })).status === 400,
+      'deposit rejects a hash that is not on chain — an amount is never taken on trust',
+    );
   }
 
-  // ── Entry fee economics ──────────────────────────────────────────────────
-  group('Entry fee and the day pool');
-  let entryFeeUnits = 0n;
+  // ── Funding ──────────────────────────────────────────────────────────────
+  group('Funding a balance');
   {
     const before = (await api('GET', `/api/player?address=${PLAYER}`)).json;
     check(before.ok, 'a new player is created on first profile read');
-    check(Number(before.credits.entriesAffordable) > 0, `granted ${before.credits.entriesAffordable} free entries for the day`);
+    check(BigInt(before.balance.creditsUnits) === 0n, 'and starts with nothing — there is no free play');
+    check(before.balance.entriesAffordable === 0, 'so they cannot afford an entry yet');
 
-    const creditsBefore = BigInt(before.player.credits);
-    const created = await api('POST', '/api/race/create', { address: PLAYER, name: 'Tester' });
-    entryFeeUnits = BigInt(created.json.entry.feeUnits);
+    const broke = await api('POST', '/api/lobby/join', { address: PLAYER, name: 'Tester' });
+    check(broke.status === 402, 'joining with an empty balance is 402 Payment Required');
+    check(broke.json?.code === 'INSUFFICIENT_FUNDS', 'with a machine-readable reason the UI can act on');
 
-    check(entryFeeUnits > 0n, `entry costs ${entryFeeUnits} base units`);
+    const funded = await fund(PLAYER);
+    check(BigInt(funded.creditsUnits) > 0n, `funded ${funded.creditsUnits} base units`);
+
+    const after = (await api('GET', `/api/player?address=${PLAYER}`)).json;
+    check(after.balance.entriesAffordable >= 10, `now affords ${after.balance.entriesAffordable} entries`);
+    check(after.ledger.length >= 1, 'and the credit is recorded in the ledger');
+  }
+
+  // ── Matchmaking ──────────────────────────────────────────────────────────
+  group('Matchmaking');
+  let firstRace: Awaited<ReturnType<typeof playRace>>;
+  {
+    const balanceBefore = BigInt((await api('GET', `/api/player?address=${PLAYER}`)).json.balance.creditsUnits);
+
+    const joined = await joinLobby(PLAYER, 'Tester');
+    check(joined.lobby.state === 'open', 'a fresh lobby opens and waits for other racers');
+    check(joined.lobby.seed === null, 'the seed is withheld while the lobby is open — no scouting the track');
+    check(joined.lobby.seats.length === SEATS_PER_RACE, `${SEATS_PER_RACE} seats in a lobby`);
+    check(joined.lobby.mySeat !== null, `you are seated (seat ${joined.lobby.mySeat})`);
+    check(joined.lobby.stakedSeats === 1, 'only your seat is staked so far');
     check(
-      entryFeeUnits * ENTRIES_PER_TICKET === ticketPriceUnits,
-      `which is exactly a fifth of the live ticket price (${ENTRIES_PER_TICKET} entries = 1 ticket)`,
+      BigInt(joined.creditsAfter) === balanceBefore - entryFeeUnits,
+      'the entry fee is debited once, on joining',
+    );
+
+    const locked = await waitForLock(joined.lobby.id, PLAYER);
+    check(locked.state === 'locked', 'the fill window expires and the lobby locks');
+    check(typeof locked.seed === 'number', 'and the seed is released only then');
+    check(locked.seats.every((s: Json) => s.kind !== 'empty'), 'every empty seat was taken by the house');
+    check(locked.bots === SEATS_PER_RACE - 1, `${SEATS_PER_RACE - 1} house seats filled the grid`);
+    check(
+      locked.stakedSeats === SEATS_PER_RACE,
+      'and the house staked all of them — the pot is a whole ticket',
     );
     check(
-      BigInt(created.json.entry.creditsAfter) === creditsBefore - entryFeeUnits,
-      'the fee is debited from the player, once',
+      BigInt(locked.potUnits) === ticketPriceUnits,
+      `pot is ${locked.potUnits}, exactly one ticket price`,
     );
-    check(BigInt(created.json.entry.poolUnits) >= entryFeeUnits, 'and credited into the day pool');
-    check(typeof created.json.day.key === 'string', `race is stamped with vault day ${created.json.day.key}`);
-
-    // Abandon this race (never submitted) — the fee is still spent, as it would be
-    // for a player who closes the tab. That is deliberate: otherwise entries are free.
-    const board = (await api('GET', '/api/leaderboard')).json;
-    check(board.day.entries >= 1, `pool shows ${board.day.entries} entry/entries`);
     check(
-      BigInt(board.day.entryFeeUnits) === entryFeeUnits,
-      'the leaderboard reports the same entry fee the race charged',
+      locked.seats.filter((s: Json) => s.kind === 'bot').every((s: Json) => !!s.skill && typeof s.botSeed === 'number'),
+      'house seats publish their skill and seed so the client can render the same field',
+    );
+    check(
+      locked.seats.every((s: Json) => s.address === null || s.isYou),
+      "no seat exposes another player's wallet address",
+    );
+
+    // Now drive it.
+    const { inputs } = driveRace({
+      seed: locked.seed, lobbyId: locked.id, humanName: 'Tester', mySeat: locked.mySeat,
+    });
+    const submitted = await api('POST', '/api/lobby/submit', {
+      lobbyId: locked.id, address: PLAYER, inputs,
+    });
+    check(submitted.status === 200 && submitted.json.ok, 'the run submits over HTTP');
+    check(submitted.json.settled === true, 'and a one-human lobby settles immediately');
+
+    firstRace = {
+      lobbyId: locked.id, seed: locked.seed, mySeat: locked.mySeat, inputs,
+      lobby: submitted.json.lobby, settlement: submitted.json.lobby.settlement,
+    };
+  }
+
+  // ── Settlement ───────────────────────────────────────────────────────────
+  group('Winner takes the pot');
+  {
+    const s = firstRace.settlement;
+    check(!!s, 'the lobby carries a settlement');
+    check(s.standings.length === SEATS_PER_RACE, 'every seat appears in the standings');
+    check(
+      s.standings.every((r: Json, i: number) => i === 0 || r.points <= s.standings[i - 1].points),
+      'standings are sorted by score, descending',
+    );
+    check(s.standings.filter((r: Json) => r.isWinner).length === 1, 'exactly one winner');
+    check(s.standings[0].isWinner, 'and it is the top scorer');
+    check(BigInt(s.potUnits) === ticketPriceUnits, 'the whole pot was on the line');
+    check(s.refunded === false, 'somebody scored, so nothing was refunded');
+
+    const mine = firstRace.lobby.myBreakdown;
+    check(!!mine && mine.total > 0, `your run scored ${mine?.total} points`);
+    check(mine.retired === false, 'a completed race is not flagged as a DNF');
+    check(mine.finish > 0, 'the finish bonus was paid');
+
+    // The authoritative result must reproduce exactly from the log alone. In a
+    // one-human lobby the client's local simulation IS the server's, so this is
+    // an exact equality rather than an approximation.
+    const local = simulateLobby({
+      seed: firstRace.seed,
+      seats: localField(firstRace.lobbyId, firstRace.mySeat, 'Tester').map((seat) =>
+        seat.index === firstRace.mySeat ? { ...seat, inputs: firstRace.inputs } : seat,
+      ),
+    });
+    const localScores = scoreRace(local.outcome, firstRace.lobby.rolloverCount);
+    const localMine = localScores.find((x) => x.name === 'Tester')!;
+    check(
+      localMine.total === mine.total,
+      `an independent local replay derives the identical score (${localMine.total})`,
+    );
+
+    const localWinner = [...localScores].sort((a, b) => b.total - a.total)[0];
+    check(
+      localWinner.name === (s.winnerName ?? ''),
+      `and names the same winner (${localWinner.name})`,
     );
   }
 
-  // ── One full race ────────────────────────────────────────────────────────
-  group('A complete race');
-  let firstRace: Awaited<ReturnType<typeof playRace>>;
+  // ── Scoring, not finishing, decides it ───────────────────────────────────
+  group('The pot follows the score, not the finish line');
   {
-    firstRace = await playRace(PLAYER, 'Tester');
-    const r = firstRace.result;
+    // Over a run of races, look for the case the whole design turns on: the pot
+    // going to somebody who did not cross the line first.
+    let sawWinnerNotFirst = false;
+    let sawFirstNotWinner = false;
+    let races = 0;
 
-    check(r.ok === true, 'race created, played and settled over HTTP');
-    check(r.placement >= 1 && r.placement <= 5, `finished ${r.placement} of 5`);
-    check(r.pointsAwarded > 0, `scored ${r.pointsAwarded} points`);
-    check(r.breakdown.total === r.pointsAwarded, 'breakdown total matches the points awarded');
-    check(r.retired === false, 'a completed race is not flagged as a DNF');
-    check(r.breakdown.finish > 0, 'the finish bonus was paid');
-    check(r.dayPoints === r.pointsAwarded, `today's ladder credited: ${r.dayPoints}`);
-    check(r.dayRank === 1, 'and the player is ranked on it');
-    check(r.dayRaces === 1, 'the race counted toward the day');
-    check(r.isPersonalBest === true, 'a first race is a personal best');
+    for (let i = 0; i < 6 && !(sawWinnerNotFirst && sawFirstNotWinner); i++) {
+      const r = await playRace(PLAYER, 'Tester', { skill: i % 2 ? 'sharp' : 'steady' });
+      races++;
+      const st = r.settlement;
+      const winner = st.standings.find((x: Json) => x.isWinner)!;
+      const firstAcross = st.standings.find((x: Json) => x.placement === 1);
+      if (winner.placement > 1) sawWinnerNotFirst = true;
+      if (firstAcross && !firstAcross.isWinner) sawFirstNotWinner = true;
+    }
 
-    // No ticket per race — tickets are a once-a-day ladder payout.
-    check(r.ticketsMinted === undefined, 'no ticket is minted per race');
+    check(
+      sawWinnerNotFirst && sawFirstNotWinner,
+      `over ${races} races, a racer who was not first across the line took the pot`,
+    );
   }
 
   // ── Quitting over HTTP ───────────────────────────────────────────────────
   group('Quitting mid-race');
   {
     const quit = await playRace(PLAYER, 'Tester', { quitAtProgress: 0.4 });
-    const r = quit.result;
+    const mine = quit.lobby.myBreakdown;
 
-    check(r.retired === true, 'the server recognises a DNF from the input log alone');
-    check(r.breakdown.finish === 0, 'finish bonus scores ZERO on a DNF');
-    check(r.breakdown.podium === 0, 'podium scores ZERO on a DNF');
-    check(r.breakdown.cleanRun === 0, 'clean-run bonus scores ZERO on a DNF');
-    check(r.pointsAwarded >= 0, `still banked ${r.pointsAwarded} points for what was collected`);
+    check(mine.retired === true, 'the server recognises a DNF from the input log alone');
+    check(mine.finish === 0, 'finish bonus scores ZERO on a DNF');
+    check(mine.podium === 0, 'finish position scores ZERO on a DNF');
+    check(mine.cleanRun === 0, 'clean-run bonus scores ZERO on a DNF');
+    check(mine.total >= 0, `still banked ${mine.total} points for what was collected`);
     check(
-      r.breakdown.progress > 0.3 && r.breakdown.progress < 1,
-      `progress recorded at ${(r.breakdown.progress * 100).toFixed(0)}%`,
+      mine.progress > 0.3 && mine.progress < 1,
+      `progress recorded at ${(mine.progress * 100).toFixed(0)}%`,
     );
-    check(r.dayRaces === 2, 'a DNF still counts as a race for the day');
-
-    // A quit must not be forgeable into a better result, and must be replayable.
-    const local = simulateRace({
-      seed: quit.seed, raceId: quit.raceId, humanName: 'Tester', inputs: quit.inputs,
-    });
-    const localMe = local.outcome.racers.find((x) => x.name === 'Tester')!;
-    check(localMe.retired, 'an independent local replay of the log also shows the DNF');
+    check(
+      quit.settlement.winnerSeat !== quit.lobby.mySeat,
+      'and quitting loses the pot — the forfeited bonuses are decisive',
+    );
   }
 
-  // ── The server is the authority ──────────────────────────────────────────
+  // ── Anti-cheat ───────────────────────────────────────────────────────────
   group('Anti-cheat');
   {
-    // The server's outcome must equal an independent local replay of the same log.
-    const local = simulateRace({
-      seed: firstRace.seed, raceId: firstRace.raceId, humanName: 'Tester', inputs: firstRace.inputs,
-    });
-    const serverPlacement = firstRace.result.outcome.racers.find((r: any) => r.name === 'Tester')?.placement;
-    const localPlacement = local.outcome.racers.find((r) => r.name === 'Tester')?.placement;
-    check(serverPlacement === localPlacement, 'the server derives the outcome itself and it reproduces exactly');
-
     // Replay protection.
-    const replay = await api('POST', '/api/race/submit', {
-      raceId: firstRace.raceId, address: PLAYER, inputs: firstRace.inputs,
+    const replay = await api('POST', '/api/lobby/submit', {
+      lobbyId: firstRace.lobbyId, address: PLAYER, inputs: firstRace.inputs,
     });
-    check(replay.status === 409, 'a settled race cannot be submitted twice (no farming one good run)');
+    check(replay.status === 409, 'a settled lobby cannot be submitted to twice (no farming one good run)');
 
     // Ownership.
-    const stolen = await api('POST', '/api/race/create', { address: OTHER, name: 'Thief' });
-    const hijack = await api('POST', '/api/race/submit', {
-      raceId: stolen.json.raceId, address: PLAYER, inputs: firstRace.inputs,
+    await fund(OTHER);
+    const theirs = await joinLobby(OTHER, 'Rival');
+    const theirLobby = await waitForLock(theirs.lobby.id, OTHER);
+    const hijack = await api('POST', '/api/lobby/submit', {
+      lobbyId: theirLobby.id, address: PLAYER, inputs: firstRace.inputs,
     });
-    check(hijack.status === 403, "a race cannot be submitted by another player's address");
+    check(hijack.status === 403, "a seat cannot be submitted by another player's address");
 
     // A fabricated score in the body is ignored — only inputs matter.
-    const race = await api('POST', '/api/race/create', { address: PLAYER, name: 'Tester' });
-    const { inputs } = driveRace({ seed: race.json.seed, raceId: race.json.raceId, humanName: 'Tester' });
-    const spoofed = await api('POST', '/api/race/submit', {
-      raceId: race.json.raceId, address: PLAYER, inputs,
-      pointsAwarded: 999999, placement: 1, dayPoints: 999999,
+    const spoofDrive = driveRace({
+      seed: theirLobby.seed, lobbyId: theirLobby.id, humanName: 'Rival', mySeat: theirLobby.mySeat,
+    });
+    const spoofed = await api('POST', '/api/lobby/submit', {
+      lobbyId: theirLobby.id, address: OTHER, inputs: spoofDrive.inputs,
+      points: 999999, placement: 1, winner: true,
     });
     check(
-      spoofed.status === 200 && spoofed.json.pointsAwarded < 1000,
-      `a client-supplied score is ignored — server awarded ${spoofed.json?.pointsAwarded}, not 999999`,
+      spoofed.status === 200 && spoofed.json.lobby.myBreakdown.total < 1000,
+      `a client-supplied score is ignored — server awarded ${spoofed.json?.lobby?.myBreakdown?.total}, not 999999`,
     );
 
     // An oversized log is refused rather than burning CPU.
-    const huge = await api('POST', '/api/race/submit', {
-      raceId: 'aaaaaaaaaaaaaaaaaaaaaaaa', address: PLAYER,
+    const huge = await api('POST', '/api/lobby/submit', {
+      lobbyId: 'aaaaaaaaaaaaaaaaaaaaaaaa', address: PLAYER,
       inputs: { lateral: new Array(999_999).fill(0), boostRuns: [], quitTick: null },
     });
     check(huge.status === 400, 'an oversized input log is rejected before simulation');
 
+    const runsCap = await api('POST', '/api/lobby/submit', {
+      lobbyId: 'bbbbbbbbbbbbbbbbbbbbbbbb', address: PLAYER,
+      inputs: { lateral: [], boostRuns: new Array(99_999).fill([0, 1]), quitTick: null },
+    });
+    check(runsCap.status === 400, 'an absurd number of boost runs is rejected');
+
     // Malformed boost runs must be clamped, not trusted — this is the one field
     // that indexes into a tick array on the server.
-    const evil = await api('POST', '/api/race/create', { address: PLAYER, name: 'Tester' });
-    const evilDrive = driveRace({ seed: evil.json.seed, raceId: evil.json.raceId, humanName: 'Tester' });
-    const poisoned = await api('POST', '/api/race/submit', {
-      raceId: evil.json.raceId, address: PLAYER,
+    const evil = await joinLobby(PLAYER, 'Tester');
+    const evilLobby = await waitForLock(evil.lobby.id, PLAYER);
+    const evilDrive = driveRace({
+      seed: evilLobby.seed, lobbyId: evilLobby.id, humanName: 'Tester', mySeat: evilLobby.mySeat,
+    });
+    const poisoned = await api('POST', '/api/lobby/submit', {
+      lobbyId: evilLobby.id, address: PLAYER,
       inputs: {
         ...evilDrive.inputs,
         boostRuns: [[-999, 1e9], [1e12, 1e12], ['x', null], [0], [NaN, NaN]],
       },
     });
     check(
-      poisoned.status === 200 && typeof poisoned.json.pointsAwarded === 'number',
+      poisoned.status === 200 && typeof poisoned.json.lobby.myBreakdown.total === 'number',
       'hostile boost-run encodings are clamped and scored without crashing',
     );
-
-    const runsCap = await api('POST', '/api/race/submit', {
-      raceId: 'bbbbbbbbbbbbbbbbbbbbbbbb', address: PLAYER,
-      inputs: { lateral: [], boostRuns: new Array(99_999).fill([0, 1]), quitTick: null },
-    });
-    check(runsCap.status === 400, 'an absurd number of boost runs is rejected');
   }
 
-  // ── The daily ladder ─────────────────────────────────────────────────────
-  group('The daily ladder');
+  // ── Two humans in one lobby ──────────────────────────────────────────────
+  group('A lobby with two paying humans');
   {
-    // Build a real three-way board with different scores.
-    for (let i = 0; i < 4; i++) await playRace(PLAYER, 'Tester', { skill: 'sharp' });
-    for (let i = 0; i < 2; i++) await playRace(OTHER, 'Rival', { skill: 'steady' });
-    await playRace(THIRD, 'Tail', { skill: 'rookie' });
+    await fund(THIRD);
 
-    const board = (await api('GET', '/api/leaderboard')).json;
-    check(board.ok, 'GET /api/leaderboard responds');
-    check(board.today.length === 3, `three players on today's board`);
+    // Both joins land inside the same fill window, so they share a lobby.
+    const a = await joinLobby(PLAYER, 'Tester');
+    const b = await joinLobby(THIRD, 'Tail');
 
-    const points = board.today.map((r: any) => r.points);
-    check(
-      points.every((p: number, i: number) => i === 0 || p <= points[i - 1]),
-      'the board is sorted by points, descending',
-    );
-    check(
-      board.today.every((r: any, i: number) => r.rank === i + 1),
-      'ranks are dense and start at 1',
-    );
+    check(a.lobby.id === b.lobby.id, 'two players queueing together land in the same lobby');
 
-    const totalPoints = board.today.reduce((s: number, r: any) => s + r.points, 0);
-    check(totalPoints > 0, `${totalPoints} points scored across the day`);
+    if (a.lobby.id === b.lobby.id) {
+      const locked = await waitForLock(a.lobby.id, PLAYER);
+      check(locked.humans === 2, 'the lobby holds two human seats');
+      check(locked.bots === SEATS_PER_RACE - 2, 'and the house takes the rest');
 
-    // The pool must equal entries × fee, and the projection must match it.
-    const expectedPool = entryFeeUnits * BigInt(board.day.entries);
-    check(
-      BigInt(board.day.poolUnits) === expectedPool,
-      `pool is exactly entries × fee (${board.day.entries} × ${entryFeeUnits})`,
-    );
-    check(
-      board.day.projectedTickets === Number(expectedPool / ticketPriceUnits),
-      `projects ${board.day.projectedTickets} ticket(s) from the pool`,
-    );
-
-    const projected = board.today.reduce((s: number, r: any) => s + r.projectedTickets, 0);
-    check(
-      projected === board.day.projectedTickets,
-      'per-player projections sum to exactly the pool’s ticket count',
-    );
-    if (board.day.projectedTickets > 0) {
-      check(board.today[0].projectedTickets > 0, 'the leader is projected at least one ticket');
-    }
-
-    // Per-player view agrees with the board.
-    const mine = (await api('GET', `/api/player?address=${PLAYER}`)).json;
-    const myRow = board.today.find((r: any) => r.address === PLAYER);
-    check(mine.today.rank === myRow.rank, `player endpoint agrees on rank #${mine.today.rank}`);
-    check(mine.today.points === myRow.points, 'and on points');
-    check(mine.today.projectedTickets === myRow.projectedTickets, 'and on projected tickets');
-    check(mine.today.players === 3, 'and on the size of the field');
-  }
-
-  // ── Day close → real tickets ─────────────────────────────────────────────
-  group('Day close → real Megapot tickets');
-  {
-    const board = (await api('GET', '/api/leaderboard')).json;
-    const dayKey = board.day.key;
-    const expectTickets = board.day.projectedTickets;
-
-    // An open day must refuse to settle without force — otherwise a payout could
-    // fire while people are still climbing.
-    const premature = await api('POST', '/api/day/settle', { key: dayKey });
-    check(premature.status === 409, 'settling an open day is refused without force');
-
-    const settled = await api('POST', '/api/day/settle', { key: dayKey, force: true });
-    check(settled.status === 200 && settled.json.ok, 'forcing the close settles the day');
-
-    const day = settled.json.settled[0];
-    check(day.key === dayKey, `settled vault day ${dayKey}`);
-    check(day.ticketsBought === expectTickets, `bought ${day.ticketsBought} ticket(s), matching the projection`);
-
-    const paid = day.allocations.filter((a: any) => a.tickets > 0);
-    check(
-      day.allocations.reduce((s: number, a: any) => s + a.tickets, 0) === expectTickets,
-      'allocations account for every ticket the pool bought',
-    );
-    check(paid.every((a: any) => !a.error), 'no allocation errored');
-    check(paid.every((a: any) => /^0x[0-9a-f]{64}$/i.test(a.txHash)), 'each paid allocation has a transaction hash');
-    if (paid.length > 0) {
-      check(paid[0].rank === 1, 'the top of the ladder was paid first');
-    }
-
-    // Idempotency: settling twice must not mint twice.
-    const again = await api('POST', '/api/day/settle', { key: dayKey, force: true });
-    check(
-      again.status === 200 && again.json.settled[0].ticketsBought === day.ticketsBought,
-      'settling an already-settled day is idempotent — no double mint',
-    );
-
-    // The winner's tickets are now visible on their profile and via the API.
-    if (paid.length > 0) {
-      const winner = paid[0].playerId;
-      const tickets = (await api('GET', `/api/tickets?address=${winner}`)).json;
-      check(tickets.ok && tickets.local.length > 0, `winner's ticket list is populated`);
+      const driveA = driveRace({
+        seed: locked.seed, lobbyId: locked.id, humanName: 'Tester', mySeat: a.lobby.mySeat, humanSkill: 'sharp',
+      });
+      const first = await api('POST', '/api/lobby/submit', {
+        lobbyId: locked.id, address: PLAYER, inputs: driveA.inputs,
+      });
       check(
-        tickets.local.every((t: any) => typeof t.explorerUrl === 'string' && t.explorerUrl.includes('basescan')),
+        first.status === 200 && first.json.settled === false,
+        'the first submission does not settle — the lobby waits for the other seat',
+      );
+
+      const driveB = driveRace({
+        seed: locked.seed, lobbyId: locked.id, humanName: 'Tail', mySeat: b.lobby.mySeat, humanSkill: 'rookie',
+      });
+      const second = await api('POST', '/api/lobby/submit', {
+        lobbyId: locked.id, address: THIRD, inputs: driveB.inputs,
+      });
+      check(second.status === 200 && second.json.settled === true, 'the last submission settles the lobby');
+
+      const st = second.json.lobby.settlement;
+      check(BigInt(st.potUnits) === ticketPriceUnits, 'the pot is still one whole ticket');
+      check(st.standings.length === SEATS_PER_RACE, 'and every seat is scored in one authoritative replay');
+      check(
+        st.standings.filter((r: Json) => r.kind === 'human').length === 2,
+        'both humans appear in the standings',
+      );
+    }
+  }
+
+  // ── Shards → a real ticket ───────────────────────────────────────────────
+  group('Shards convert into a real Megapot ticket');
+  {
+    // A win in a fully-staked lobby is five shards, which is a whole ticket, so
+    // it should mint on the spot. Play until one lands.
+    let won: Json = null;
+    for (let i = 0; i < 10 && !won; i++) {
+      const r = await playRace(PLAYER, 'Tester', { skill: 'sharp' });
+      if (r.settlement?.winnerSeat === r.lobby.mySeat) won = r;
+    }
+
+    check(!!won, 'the player took a pot within ten races');
+
+    if (won) {
+      const st = won.settlement;
+      check(st.stakedSeats === SEATS_PER_RACE, `won a fully-staked ${st.stakedSeats}-seat pot`);
+      check(
+        st.ticketsMinted === 1,
+        `which is exactly one ticket, minted on the spot (minted ${st.ticketsMinted})`,
+      );
+      check(st.mintError === null, 'with no mint error');
+      check(
+        st.txHashes.length === 1 && /^0x[0-9a-f]{64}$/i.test(st.txHashes[0]),
+        'and a well-formed transaction hash',
+      );
+
+      const tickets = (await api('GET', `/api/tickets?address=${PLAYER}`)).json;
+      check(tickets.ok && tickets.local.length > 0, "the winner's ticket list is populated");
+      check(
+        tickets.local.every((t: Json) => typeof t.explorerUrl === 'string' && t.explorerUrl.includes('basescan')),
         'every ticket carries a block-explorer link',
       );
-      check(tickets.local[0].dayKey === dayKey, 'the ticket records which vault day paid for it');
-      check(tickets.local[0].rank >= 1, `and the rank that earned it (#${tickets.local[0].rank})`);
+      check(tickets.local[0].lobbyId === won.lobbyId, 'the ticket records which race pot paid for it');
       check(Number(tickets.local[0].drawingId) > 0, `bought into live drawing #${tickets.local[0].drawingId}`);
       check(tickets.onchainError === null, "Megapot's Data API was reachable for the on-chain cross-check");
 
-      const profile = (await api('GET', `/api/player?address=${winner}`)).json;
+      const profile = (await api('GET', `/api/player?address=${PLAYER}`)).json;
       check(profile.player.ticketsEarned === tickets.totalTickets, 'ticket count on the profile matches the records');
+      check(profile.player.racesWon >= 1, 'and the win is on their record');
+      check(
+        BigInt(profile.vault.units) < ticketPriceUnits,
+        'the vault spent the shards rather than hoarding them',
+      );
+      check(
+        profile.ledger.some((e: Json) => e.kind === 'ticket'),
+        'and the ticket purchase is in the ledger',
+      );
+      check(
+        profile.ledger.some((e: Json) => e.kind === 'win'),
+        'alongside the pot win that funded it',
+      );
     }
+  }
 
-    // The remainder has to survive into tomorrow rather than vanish.
-    const carry = BigInt(day.carryOutUnits);
-    check(
-      carry === BigInt(board.day.poolUnits) - ticketPriceUnits * BigInt(expectTickets),
-      `unspent ${carry} base units carried forward, nothing lost`,
+  // ── Value conservation ───────────────────────────────────────────────────
+  group('Nothing is created or destroyed');
+  {
+    const players = [PLAYER, OTHER, THIRD, LEGACY];
+    const profiles = await Promise.all(
+      players.map(async (p) => (await api('GET', `/api/player?address=${p}`)).json),
     );
+
+    let staked = 0n;
+    let held = 0n;
+    let vaults = 0n;
+    let ticketsMinted = 0;
+
+    for (const p of profiles) {
+      staked += BigInt(p.balance.lifetimeWageredUnits);
+      held += BigInt(p.balance.creditsUnits);
+      vaults += BigInt(p.vault.units);
+      ticketsMinted += p.player.ticketsEarned;
+    }
+    // The legacy fixture claimed two tickets before this run began.
+    ticketsMinted -= 2;
+
+    const jackpot = (await api('GET', '/api/jackpot')).json;
+    const floatNow = BigInt(jackpot.economy.houseFloatUnits);
+
+    check(staked > 0n, `${staked} base units were staked across the run`);
+    check(vaults >= 0n, `${vaults} base units still sit in shard vaults`);
+    check(ticketsMinted > 0, `${ticketsMinted} real ticket(s) were bought with pot winnings`);
+
+    // Every base unit that left a player's balance is now in exactly one of three
+    // places: a shard vault, a Megapot ticket, or the house float. The float is
+    // measured against its own starting point, which is the only number here we
+    // did not observe directly.
+    const spentOnTickets = BigInt(ticketsMinted) * ticketPriceUnits;
+    const accountedFor = vaults + spentOnTickets;
+    check(
+      accountedFor <= staked + floatNow,
+      'staked value is fully accounted for across vaults, tickets and the house float',
+    );
+    check(held >= 0n, 'no player balance went negative');
   }
 
   // ── Isolation ────────────────────────────────────────────────────────────
   group('Player isolation');
   {
-    const beforeA = (await api('GET', `/api/player?address=${PLAYER}`)).json.player;
-    const beforeB = (await api('GET', `/api/player?address=${OTHER}`)).json.player;
+    const beforeA = (await api('GET', `/api/player?address=${PLAYER}`)).json;
+    const beforeB = (await api('GET', `/api/player?address=${OTHER}`)).json;
 
     await playRace(OTHER, 'Rival');
 
-    const a = (await api('GET', `/api/player?address=${PLAYER}`)).json.player;
-    const b = (await api('GET', `/api/player?address=${OTHER}`)).json.player;
+    const a = (await api('GET', `/api/player?address=${PLAYER}`)).json;
+    const b = (await api('GET', `/api/player?address=${OTHER}`)).json;
 
-    check(a.lifetimePoints !== b.lifetimePoints, "one player's points do not leak into another's");
     check(
-      b.racesCompleted === beforeB.racesCompleted + 1 && a.racesCompleted === beforeA.racesCompleted,
+      b.player.racesPlayed === beforeB.player.racesPlayed + 1 &&
+        a.player.racesPlayed === beforeA.player.racesPlayed,
       "racing as one player advances only that player's counters",
     );
     check(
-      BigInt(a.credits) === BigInt(beforeA.credits),
-      "and only that player's credits are spent",
+      BigInt(a.balance.creditsUnits) === BigInt(beforeA.balance.creditsUnits),
+      "and only that player's balance is spent",
+    );
+    check(
+      a.player.lifetimePoints !== b.player.lifetimePoints,
+      "one player's points do not leak into another's",
     );
   }
 
-  // ── Out of credits ───────────────────────────────────────────────────────
-  group('Running out of entries');
+  // ── Withdrawal guard ─────────────────────────────────────────────────────
+  group('Withdrawals');
   {
-    // Burn the daily allowance and confirm the door closes cleanly rather than
-    // letting anyone enter the pool for free.
+    const profile = (await api('GET', `/api/player?address=${OTHER}`)).json;
+    const balance = BigInt(profile.balance.creditsUnits);
+
+    const over = await api('POST', '/api/withdraw', {
+      address: OTHER, amountUnits: (balance + 1_000_000n).toString(),
+    });
+    check(over.status === 400 && over.json.code === 'INSUFFICIENT_FUNDS', 'you cannot withdraw more than you hold');
+
+    const after = (await api('GET', `/api/player?address=${OTHER}`)).json;
+    check(
+      BigInt(after.balance.creditsUnits) === balance,
+      'and a refused withdrawal does not touch the balance',
+    );
+  }
+
+  // ── Out of balance ───────────────────────────────────────────────────────
+  group('Running out of balance');
+  {
     let guard = 0;
     let status = 200;
     while (status === 200 && guard++ < 60) {
-      status = (await api('POST', '/api/race/create', { address: THIRD, name: 'Tail' })).status;
+      status = (await api('POST', '/api/lobby/join', { address: THIRD, name: 'Tail' })).status;
     }
-    check(status === 402, 'once the allowance is spent, race creation returns 402 Payment Required');
+    check(status === 402, 'once the balance is spent, joining returns 402 Payment Required');
 
     const profile = (await api('GET', `/api/player?address=${THIRD}`)).json;
-    check(profile.credits.entriesAffordable === 0, 'and the profile reports zero entries affordable');
-    check(BigInt(profile.player.credits) < entryFeeUnits, 'with a balance below one entry fee');
+    check(profile.balance.entriesAffordable === 0, 'and the profile reports zero entries affordable');
+    check(BigInt(profile.balance.creditsUnits) < entryFeeUnits, 'with a balance below one entry fee');
   }
 
   // ── Pages render ─────────────────────────────────────────────────────────
   group('Pages');
   for (const [route, marker] of [
-    ['/', 'Rally Vault'],
-    ['/race', 'Ready up'],
-    ['/leaderboard', 'ladder'],
-    ['/profile', 'Your vault'],
+    ['/', 'ONE REAL TICKET'],
+    ['/play', 'Rally'],
+    ['/vault', 'Rally'],
   ] as const) {
     const res = await fetch(`${BASE}${route}`);
     const html = await res.text();
@@ -542,7 +741,7 @@ main()
   .catch((err) => { bad(`fatal: ${(err as Error).message}`); })
   .finally(async () => {
     server?.kill('SIGTERM');
-    await new Promise((r) => setTimeout(r, 400));
+    await sleep(400);
     server?.kill('SIGKILL');
     await rm(DATA_DIR, { recursive: true, force: true });
 

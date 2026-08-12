@@ -39,6 +39,29 @@ export function getTreasuryClient() {
   };
 }
 
+/**
+ * The address players deposit to.
+ *
+ * Derived from the treasury key when there is one, so the deposit destination
+ * and the wallet that pays for tickets can never drift apart. `TREASURY_ADDRESS`
+ * exists for the read-only case: a deployment that wants to accept deposits and
+ * show balances without holding a spending key on the server.
+ *
+ * Returns null when neither is configured, and every caller treats that as
+ * "deposits are switched off" rather than guessing an address.
+ */
+export function getTreasuryAddress(): `0x${string}` | null {
+  const key = process.env.TREASURY_PRIVATE_KEY;
+  if (key) {
+    return privateKeyToAccount((key.startsWith('0x') ? key : `0x${key}`) as `0x${string}`)
+      .address;
+  }
+  const explicit = process.env.TREASURY_ADDRESS;
+  return explicit && /^0x[a-fA-F0-9]{40}$/.test(explicit)
+    ? (explicit as `0x${string}`)
+    : null;
+}
+
 /** Our own address, used as the referrer so the project earns protocol fees. */
 export function getReferrer(): `0x${string}` | null {
   const r = process.env.NEXT_PUBLIC_REFERRER_ADDRESS;

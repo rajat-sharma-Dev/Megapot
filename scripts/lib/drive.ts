@@ -1,24 +1,41 @@
 /**
- * Test helper: drive a race with a bot standing in for the human player, and
- * record the input log exactly as the browser would.
+ * Test helper: drive a lobby seat with a bot standing in for the human player,
+ * and record the input log exactly as the browser would.
  *
  * This is what makes the end-to-end test real — the log it produces is the same
  * shape the client submits, so the server replays it through the identical code
  * path a genuine player would hit.
  */
 
-import { createRaceState, step, raceComplete, finalize, retire, isOut, MAX_TICKS } from '../../src/lib/game/engine';
 import {
-  buildTrackForRace, buildRacerSlots, HUMAN_ID, quantiseLateral,
-  emptyInputLog, type InputLog,
+  createRaceState, step, raceComplete, finalize, retire, isOut, MAX_TICKS,
+} from '../../src/lib/game/engine';
+import {
+  buildTrackForRace, botRoster, quantiseLateral, emptyInputLog,
+  SEATS_PER_RACE, type InputLog, type SeatSpec,
 } from '../../src/lib/game/replay';
 import { BotController, type BotSkill } from '../../src/lib/game/bots';
 import type { Input, RaceOutcome } from '../../src/lib/game/types';
 
+/**
+ * Build the field a client would simulate locally: your seat, plus house bots
+ * in every other seat. Matches `localSeats` for the common one-human lobby.
+ */
+export function localField(lobbyId: string, mySeat: number, myName: string): SeatSpec[] {
+  const roster = botRoster(lobbyId);
+  return Array.from({ length: SEATS_PER_RACE }, (_, i) =>
+    i === mySeat
+      ? { index: i, id: `seat_${i}`, name: myName, kind: 'human' as const }
+      : { index: i, kind: 'bot' as const, ...roster[i] },
+  );
+}
+
 export function driveRace(opts: {
   seed: number;
-  raceId: string;
+  lobbyId: string;
   humanName: string;
+  /** Seat the stand-in player occupies. */
+  mySeat?: number;
   /** How well the stand-in "player" drives. */
   humanSkill?: BotSkill;
   humanSeed?: number;
@@ -27,14 +44,20 @@ export function driveRace(opts: {
    * the Quit button mid-race. Omitted means play it out.
    */
   quitAtProgress?: number;
-}): { inputs: InputLog; outcome: RaceOutcome } {
+}): { inputs: InputLog; outcome: RaceOutcome; myId: string } {
+  const mySeat = opts.mySeat ?? 0;
   const track = buildTrackForRace(opts.seed);
-  const slots = buildRacerSlots(opts.raceId, opts.humanName);
-  const state = createRaceState(track, slots.map((s) => ({ id: s.id, name: s.name, isBot: s.isBot })));
+  const seats = localField(opts.lobbyId, mySeat, opts.humanName);
+  const myId = seats[mySeat].id;
+
+  const state = createRaceState(
+    track,
+    seats.map((s) => ({ id: s.id, name: s.name, isBot: s.kind === 'bot' })),
+  );
 
   const controllers = new Map<string, BotController>();
-  for (const s of slots) {
-    if (s.isBot) controllers.set(s.id, new BotController(s.botSeed ?? 1, s.skill ?? 'steady'));
+  for (const s of seats) {
+    if (s.kind === 'bot') controllers.set(s.id, new BotController(s.botSeed ?? 1, s.skill ?? 'steady'));
   }
   const human = new BotController(opts.humanSeed ?? opts.seed ^ 0x5f3d, opts.humanSkill ?? 'sharp');
 
@@ -44,7 +67,7 @@ export function driveRace(opts: {
   let quitTick: number | null = null;
 
   while (!raceComplete(state) && state.tick < MAX_TICKS) {
-    const me = state.racers.find((r) => r.id === HUMAN_ID)!;
+    const me = state.racers.find((r) => r.id === myId)!;
 
     // Decide to bail out. Recorded as the tick the quit takes effect, and applied
     // at the top of that tick — the same ordering the server replay uses.
@@ -56,7 +79,7 @@ export function driveRace(opts: {
     ) {
       quitTick = state.tick;
     }
-    if (quitTick !== null && state.tick >= quitTick) retire(state, HUMAN_ID);
+    if (quitTick !== null && state.tick >= quitTick) retire(state, myId);
     if (raceComplete(state)) break;
 
     frame.clear();
@@ -66,7 +89,7 @@ export function driveRace(opts: {
       ? { lateral: 0, boost: false }
       : human.decide(
           me, track, state.tick,
-          state.claimedPickups.get(HUMAN_ID) ?? new Set(),
+          state.claimedPickups.get(myId) ?? new Set(),
           state.orbClaimedBy !== null,
         );
 
@@ -90,7 +113,7 @@ export function driveRace(opts: {
       }
     }
 
-    frame.set(HUMAN_ID, { lateral, boost: raw.boost });
+    frame.set(myId, { lateral, boost: raw.boost });
 
     for (const [id, bot] of controllers) {
       const racer = state.racers.find((r) => r.id === id)!;
@@ -112,5 +135,5 @@ export function driveRace(opts: {
   if (openRun) inputs.boostRuns.push([openRun.start, openRun.len]);
   inputs.quitTick = quitTick;
 
-  return { inputs, outcome: finalize(state) };
+  return { inputs, outcome: finalize(state), myId };
 }

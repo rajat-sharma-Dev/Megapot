@@ -1,69 +1,58 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useNow } from '@/lib/hooks';
 import { formatDuration } from '@/lib/format';
 
-/** Shared 1Hz clock so a page full of countdowns runs one interval, not eight. */
-function useNow(intervalMs = 1000) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
 /**
- * Countdown to the daily Megapot draw (17:00 UTC).
+ * Countdown to the daily Megapot draw.
  *
- * This is a retention mechanic, not decoration: it converts the protocol's
- * cadence into a reason to play right now. Rendered client-side so it ticks.
+ * A retention mechanic rather than decoration: it converts the protocol's
+ * once-a-day cadence into a reason to play a race right now, because a ticket
+ * won after the draw closes rides the next one.
  */
 export function DrawCountdown({ drawTimeMs }: { drawTimeMs: number }) {
   const now = useNow();
   const remaining = Math.max(0, drawTimeMs - now);
 
   if (remaining === 0) {
-    return <span className="tabular-nums text-amber-400">drawing now…</span>;
+    return <span className="num text-[var(--gold)]">drawing now…</span>;
   }
 
   const h = Math.floor(remaining / 3_600_000);
   const m = Math.floor((remaining % 3_600_000) / 60_000);
   const s = Math.floor((remaining % 60_000) / 1000);
   const pad = (n: number) => n.toString().padStart(2, '0');
+  const urgent = remaining < 1_800_000;
 
   return (
-    <span className="tabular-nums">
+    <span className={`num ${urgent ? 'text-[var(--gold)]' : ''}`}>
       {h}h {pad(m)}m {pad(s)}s
     </span>
   );
 }
 
 /**
- * Countdown to the vault day closing — the moment the ladder pays out.
- *
- * Turns amber inside the last hour, because that is exactly when a player can
- * still change their rank and should feel the pressure to try.
+ * A generic deadline countdown — used for the matchmaking fill window and the
+ * submission deadline. Sub-minute precision, because both of those are measured
+ * in seconds and "1m" would be a lie for 61 seconds and for 119.
  */
-export function DayCountdown({
-  closesAt,
+export function Countdown({
+  until,
   className = '',
+  onDone,
 }: {
-  closesAt: string;
+  until: string | number;
   className?: string;
+  onDone?: () => void;
 }) {
-  const now = useNow();
-  const remaining = Math.max(0, new Date(closesAt).getTime() - now);
+  const now = useNow(250);
+  const target = typeof until === 'number' ? until : new Date(until).getTime();
+  const remaining = Math.max(0, target - now);
 
   if (remaining === 0) {
-    return <span className={`tabular-nums text-amber-400 ${className}`}>settling…</span>;
+    onDone?.();
+    return <span className={`num ${className}`}>now</span>;
   }
 
-  const urgent = remaining < 3_600_000;
-
-  return (
-    <span className={`tabular-nums ${urgent ? 'text-[var(--gold)]' : ''} ${className}`}>
-      {formatDuration(remaining)}
-    </span>
-  );
+  return <span className={`num ${className}`}>{formatDuration(remaining)}</span>;
 }

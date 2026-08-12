@@ -1,5 +1,5 @@
 /**
- * Engine, track, scoring and allocation tests.
+ * Engine, track, scoring and pot tests.
  *
  *   npx tsx scripts/test-engine.ts
  *
@@ -8,15 +8,39 @@
  */
 
 import { generateTrack, CELLS_MIN, CELLS_MAX, FUEL_CANS_MIN, FUEL_CANS_MAX } from '../src/lib/game/trackgen';
-import { simulateRace, emptyInputLog } from '../src/lib/game/replay';
-import { driveRace } from './lib/drive';
-import { scoreRace, orbValue, FINISH_BONUS, CLEAN_RUN_BONUS } from '../src/lib/points/scoring';
+import { simulateLobby, emptyInputLog, type InputLog } from '../src/lib/game/replay';
+import type { RaceOutcome } from '../src/lib/game/types';
+import { driveRace, localField } from './lib/drive';
+import {
+  scoreRace, orbValue, FINISH_BONUS, CLEAN_RUN_BONUS, PODIUM_BONUS,
+  type ScoreBreakdown,
+} from '../src/lib/points/scoring';
 import { SECTION_TEMPLATES } from '../src/lib/game/sections';
 import { TICK_DT, FUEL_MAX, FUEL_START, FUEL_SECONDS_PER_TANK } from '../src/lib/game/engine';
 import { BOT_PROFILES, type BotSkill } from '../src/lib/game/bots';
-import { allocateTickets, poolToTickets } from '../src/lib/vault/allocate';
-import { vaultDayKey, dayCloseMs, windowForKey, isClosed, DAY_MS } from '../src/lib/vault/day';
-import { entryFeeUnits, ENTRIES_PER_TICKET } from '../src/lib/vault/economy';
+import { resolvePot, rankSeats, wonFromBehind, type PotSeat } from '../src/lib/vault/pot';
+import {
+  entryFeeUnits, vaultToTickets, shardsOf, ticketProgress,
+  SHARDS_PER_TICKET, SEATS_PER_RACE,
+} from '../src/lib/vault/economy';
+
+/**
+ * Replay one seat's log through the authoritative lobby simulation — exactly
+ * what the server does on submission.
+ */
+const replayLobby = (
+  seed: number,
+  lobbyId: string,
+  name: string,
+  inputs: InputLog,
+  mySeat = 0,
+) =>
+  simulateLobby({
+    seed,
+    seats: localField(lobbyId, mySeat, name).map((s) =>
+      s.index === mySeat ? { ...s, inputs } : s,
+    ),
+  });
 
 let pass = 0;
 let fail = 0;
@@ -85,21 +109,21 @@ group('Replay determinism (the anti-cheat foundation)');
 
   for (let i = 0; i < N; i++) {
     const seed = 7000 + i * 13;
-    const raceId = `det_${i}`;
-    const { inputs, outcome } = driveRace({ seed, raceId, humanName: 'Tester' });
-    const replay = simulateRace({ seed, raceId, humanName: 'Tester', inputs });
+    const lobbyId = `det_${i}`;
+    const { inputs, outcome } = driveRace({ seed, lobbyId, humanName: 'Tester' });
+    const replay = replayLobby(seed, lobbyId, 'Tester', inputs);
     if (JSON.stringify(replay.outcome) === JSON.stringify(outcome)) identical++;
   }
   check(identical === N, `${identical}/${N} races replay to a byte-identical outcome`);
 
   // Tamper with the log and the outcome must diverge.
   const seed = 4242;
-  const { inputs, outcome } = driveRace({ seed, raceId: 'tamper', humanName: 'Tester' });
+  const { inputs, outcome } = driveRace({ seed, lobbyId: 'tamper', humanName: 'Tester' });
   const tampered = {
     ...inputs,
     lateral: inputs.lateral.map((v, i) => (i % 7 === 0 ? -v : v)),
   };
-  const replay = simulateRace({ seed, raceId: 'tamper', humanName: 'Tester', inputs: tampered });
+  const replay = replayLobby(seed, 'tamper', 'Tester', tampered);
   check(
     JSON.stringify(replay.outcome) !== JSON.stringify(outcome),
     'a modified input log produces a different outcome (tampering is detectable)',
@@ -107,15 +131,15 @@ group('Replay determinism (the anti-cheat foundation)');
 
   // Boost runs must survive the round trip — a held boost is worth real speed,
   // so a lossy encoding would silently change every score.
-  const withBoost = driveRace({ seed: 555, raceId: 'boost', humanName: 'Tester', humanSkill: 'sharp' });
-  const boostReplay = simulateRace({ seed: 555, raceId: 'boost', humanName: 'Tester', inputs: withBoost.inputs });
+  const withBoost = driveRace({ seed: 555, lobbyId: 'boost', humanName: 'Tester', humanSkill: 'sharp' });
+  const boostReplay = replayLobby(555, 'boost', 'Tester', withBoost.inputs);
   const drivenBoost = withBoost.outcome.racers.find((r) => r.name === 'Tester')!.boostTicks;
   const replayBoost = boostReplay.outcome.racers.find((r) => r.name === 'Tester')!.boostTicks;
   check(drivenBoost > 0, `the stand-in player actually used boost (${drivenBoost} ticks)`);
   check(drivenBoost === replayBoost, 'run-length encoded boost replays exactly');
 
   // An empty log must not crash — it's what a player closing the tab produces.
-  const empty = simulateRace({ seed: 99, raceId: 'empty', humanName: 'Idle', inputs: emptyInputLog() });
+  const empty = replayLobby(99, 'empty', 'Idle', emptyInputLog());
   check(empty.outcome.racers.length === 5, 'an empty input log still produces a full result');
 }
 
@@ -123,10 +147,10 @@ group('Replay determinism (the anti-cheat foundation)');
 group('Quitting mid-race');
 {
   const seed = 8181;
-  const raceId = 'quit_1';
+  const lobbyId = 'quit_1';
 
-  const played = driveRace({ seed, raceId, humanName: 'Tester' });
-  const quit = driveRace({ seed, raceId, humanName: 'Tester', quitAtProgress: 0.45 });
+  const played = driveRace({ seed, lobbyId, humanName: 'Tester' });
+  const quit = driveRace({ seed, lobbyId, humanName: 'Tester', quitAtProgress: 0.45 });
 
   const qMe = quit.outcome.racers.find((r) => r.name === 'Tester')!;
   const pMe = played.outcome.racers.find((r) => r.name === 'Tester')!;
@@ -137,7 +161,7 @@ group('Quitting mid-race');
   check(qMe.placement === 5, 'a DNF ranks last, behind every finisher');
 
   // The quit must replay identically from the log alone.
-  const replay = simulateRace({ seed, raceId, humanName: 'Tester', inputs: quit.inputs });
+  const replay = replayLobby(seed, lobbyId, 'Tester', quit.inputs);
   check(
     JSON.stringify(replay.outcome) === JSON.stringify(quit.outcome),
     'a quit replays byte-identically from the input log',
@@ -166,12 +190,12 @@ group('Quitting mid-race');
   );
 
   // Quitting at the very first tick is the degenerate case.
-  const instant = driveRace({ seed: 3131, raceId: 'quit_0', humanName: 'Tester', quitAtProgress: 0 });
+  const instant = driveRace({ seed: 3131, lobbyId: 'quit_0', humanName: 'Tester', quitAtProgress: 0 });
   const iMe = instant.outcome.racers.find((r) => r.name === 'Tester')!;
   const [iScore] = scoreRace(instant.outcome).filter((s) => s.name === 'Tester');
   check(iMe.retired, 'quitting immediately still produces a valid result');
   check(iScore.total === 0, 'quitting before collecting anything scores exactly 0');
-  const iReplay = simulateRace({ seed: 3131, raceId: 'quit_0', humanName: 'Tester', inputs: instant.inputs });
+  const iReplay = replayLobby(3131, 'quit_0', 'Tester', instant.inputs);
   check(
     JSON.stringify(iReplay.outcome) === JSON.stringify(instant.outcome),
     'an instant quit replays identically',
@@ -192,7 +216,7 @@ group('Boost fuel');
   let cans = 0, boostTicks = 0;
   const N = 60;
   for (let i = 0; i < N; i++) {
-    const { outcome } = driveRace({ seed: 2200 + i * 31, raceId: `fuel_${i}`, humanName: 'Tester' });
+    const { outcome } = driveRace({ seed: 2200 + i * 31, lobbyId: `fuel_${i}`, humanName: 'Tester' });
     const me = outcome.racers.find((r) => r.name === 'Tester')!;
     cans += me.fuelCans;
     boostTicks += me.boostTicks;
@@ -205,7 +229,7 @@ group('Boost fuel');
 
   // Boost has to be usable while stunned, or a hit is unrecoverable — the whole
   // reason this system replaced two fixed charges.
-  const stunnedBoost = driveRace({ seed: 6060, raceId: 'stun', humanName: 'Tester' });
+  const stunnedBoost = driveRace({ seed: 6060, lobbyId: 'stun', humanName: 'Tester' });
   const sMe = stunnedBoost.outcome.racers.find((r) => r.name === 'Tester')!;
   check(sMe.hardHits >= 0 && sMe.boostTicks > 0, 'boost is available on a track where hits happen');
 }
@@ -222,7 +246,7 @@ group('Race feel');
   const N = 120;
 
   for (let i = 0; i < N; i++) {
-    const { outcome } = driveRace({ seed: 3000 + i * 17, raceId: `feel_${i}`, humanName: 'Tester' });
+    const { outcome } = driveRace({ seed: 3000 + i * 17, lobbyId: `feel_${i}`, humanName: 'Tester' });
     durations.push(outcome.ticks * TICK_DT);
     if (!outcome.racers.every((r) => r.finished)) allFinished = false;
 
@@ -263,7 +287,7 @@ group('Bot skill ladder');
     let place = 0, hits = 0, points = 0;
     for (let i = 0; i < N; i++) {
       const { outcome } = driveRace({
-        seed: 5100 + i * 23, raceId: `skill_${skill}_${i}`, humanName: 'Tester', humanSkill: skill,
+        seed: 5100 + i * 23, lobbyId: `skill_${skill}_${i}`, humanName: 'Tester', humanSkill: skill,
       });
       const me = outcome.racers.find((r) => r.name === 'Tester')!;
       const s = scoreRace(outcome).find((x) => x.name === 'Tester')!;
@@ -328,7 +352,7 @@ group('Point economy');
   const N = 120;
 
   for (let i = 0; i < N; i++) {
-    const { outcome } = driveRace({ seed: 4100 + i * 29, raceId: `econ_${i}`, humanName: 'Tester', humanSkill: 'steady' });
+    const { outcome } = driveRace({ seed: 4100 + i * 29, lobbyId: `econ_${i}`, humanName: 'Tester', humanSkill: 'steady' });
     const scores = scoreRace(outcome, 0);
     for (const s of scores) {
       if (s.total < 0) anyNegative = true;
@@ -349,29 +373,125 @@ group('Point economy');
   check(CLEAN_RUN_BONUS > 0, 'a clean run is worth something');
 }
 
-// ── Vault day boundaries ────────────────────────────────────────────────────
-group('Vault day (17:00 UTC, Megapot cadence)');
+
+// ── The Orb has to be carried home ──────────────────────────────────────────
+group('The Jackpot Orb only pays if you finish');
 {
-  // Just before the boundary we are still in the day that closes today.
-  const before = Date.UTC(2026, 7, 12, 16, 59, 0);
-  const after = Date.UTC(2026, 7, 12, 17, 0, 0);
-  const later = Date.UTC(2026, 7, 12, 23, 30, 0);
+  /**
+   * Regression test for a genuine exploit the end-to-end suite caught: grab the
+   * Orb, quit on the spot, keep 80–200 points that no honest finisher could beat,
+   * and deny the Orb to everyone else on the way out. It beat playing the race
+   * out, which made quitting the optimal line in any race with an Orb in it.
+   */
+  const racer = (over: Partial<RaceOutcome['racers'][number]>) => ({
+    id: 'r', name: 'R', isBot: false, placement: 1, finishTick: 100, finished: true,
+    retired: false, hardHits: 0, cleanRun: false, pickupPoints: 40, cellsCollected: 4,
+    fuelCans: 2, traps: 0, boostTicks: 0, hasOrb: true, nearMisses: 0, steals: 0,
+    stolenFrom: 0, progress: 1,
+    ...over,
+  });
 
-  check(vaultDayKey(before) === '2026-08-12', 'at 16:59 UTC the day key is today');
-  check(vaultDayKey(after) === '2026-08-13', 'at 17:00 UTC exactly it rolls to tomorrow');
-  check(vaultDayKey(later) === '2026-08-13', 'later that evening it is still tomorrow-keyed');
+  const finisher = scoreRace({ seed: 1, ticks: 100, racers: [racer({})] }, 0)[0];
+  const quitter = scoreRace(
+    { seed: 1, ticks: 100, racers: [racer({ finished: false, retired: true, progress: 0.4 })] },
+    0,
+  )[0];
 
-  check(dayCloseMs(before) === after, 'the day before the boundary closes at the boundary');
-  check(dayCloseMs(after) === after + DAY_MS, 'the next day closes 24h later');
+  check(finisher.orb === orbValue(0), 'a finisher who held the Orb is paid for it');
+  check(quitter.orb === 0, 'a racer who quit holding the Orb is paid nothing for it');
+  check(quitter.orbClaimed, 'but the score sheet still records that they held it');
+  check(
+    quitter.total < finisher.total - orbValue(0),
+    'so quitting with the Orb is strictly worse than carrying it home',
+  );
+}
 
-  const w = windowForKey('2026-08-12');
-  check(w.closesAtMs === after, 'a key round-trips to its own closing instant');
-  check(w.closesAtMs - w.opensAtMs === DAY_MS, 'a vault day is exactly 24 hours');
-  check(new Date(w.opensAt).getUTCHours() === 17, 'and it opens at 17:00 UTC too');
+// ── Who wins the pot ────────────────────────────────────────────────────────
+group('Winning is scoring, not finishing first');
+{
+  const seat = (
+    index: number,
+    kind: 'human' | 'bot',
+    total: number,
+    placement: number,
+    extra: Partial<ScoreBreakdown> = {},
+  ): PotSeat => ({
+    index,
+    kind,
+    id: kind === 'bot' ? `house_${index}` : `0x${String(index).repeat(40).slice(0, 40)}`,
+    name: `S${index}`,
+    staked: true,
+    score: {
+      racerId: '', name: `S${index}`, placement, finished: true, retired: false, progress: 1,
+      finish: 25, pickups: 0, cellsCollected: 0, traps: 0, cleanRun: 0, nearMiss: 0,
+      nearMissCount: 0, podium: PODIUM_BONUS[placement] ?? 8, orb: 0, orbClaimed: false,
+      boost: 0, boostSeconds: 0, fuelCans: 0, stealGained: 0, stealLost: 0,
+      total,
+      ...extra,
+    },
+  });
 
-  check(isClosed('2026-08-12', after), 'a day is closed at its boundary');
-  check(!isClosed('2026-08-12', before), 'and open a minute earlier');
-  check(vaultDayKey(dayCloseMs(before) - 1) === '2026-08-12', 'the last millisecond belongs to the closing day');
+  // The headline claim of the whole design, asserted rather than assumed.
+  const field = [
+    seat(0, 'human', 131, 1), // won the sprint, collected nothing
+    seat(1, 'bot', 118, 2),
+    seat(2, 'human', 171, 3), // came third, drove the whole track
+    seat(3, 'bot', 90, 4),
+    seat(4, 'bot', 64, 5),
+  ];
+
+  const pot = resolvePot(field, 200_000n);
+  check(pot.winner?.index === 2, 'the highest score takes the pot, not the first across the line');
+  check(wonFromBehind(pot.winner), 'and the results screen can say so — the winner placed third');
+  check(pot.standings[0].index === 2 && pot.standings[4].index === 4, 'standings are ordered by score');
+  check(pot.potUnits === 1_000_000n, 'five staked seats make one whole ticket price');
+  check(pot.stakedSeats === SEATS_PER_RACE, 'and the pot counts every staked seat');
+
+  // Only staked seats fund the pot. An unstaked house seat still races.
+  const short = resolvePot(
+    field.map((s, i) => (i >= 3 ? { ...s, staked: false } : s)),
+    200_000n,
+  );
+  check(short.potUnits === 600_000n, 'unstaked seats contribute nothing to the pot');
+  check(short.winner?.index === 2, 'but they do not change who wins it');
+
+  // A house win sends the pot back to the float rather than to a player.
+  const houseField = [seat(0, 'human', 80, 2), seat(1, 'bot', 150, 1)];
+  const houseResult = resolvePot(houseField, 200_000n);
+  check(houseResult.houseWins, 'a house seat that outscores every human takes the pot back');
+
+  // Nobody scored: refund rather than hand a pot to an arbitrary seat.
+  const deadField = field.map((s) => ({ ...s, score: { ...s.score!, total: 0 } }));
+  const dead = resolvePot(deadField, 200_000n);
+  check(dead.winner === null, 'a race where nobody scored has no winner');
+
+  // Determinism: settlement can run twice and must agree.
+  const a = JSON.stringify(resolvePot(field, 200_000n).standings.map((s) => s.index));
+  const b = JSON.stringify(resolvePot([...field].reverse(), 200_000n).standings.map((s) => s.index));
+  check(a === b, 'ranking is deterministic regardless of seat input order');
+
+  // Ties fall through the documented ladder rather than to insertion order.
+  const tied = rankSeats([
+    seat(3, 'human', 140, 4),
+    seat(1, 'human', 140, 2),
+  ]);
+  check(tied[0].index === 1, 'an exact points tie breaks toward the better finish position');
+}
+
+// ── Finish position is worth having, never enough ───────────────────────────
+group('Finish position weighting');
+{
+  check(PODIUM_BONUS[1] === 60, 'first place is worth 60');
+  check(PODIUM_BONUS[1] - PODIUM_BONUS[3] === 35, 'first to third is a 35-point gap');
+  check(
+    PODIUM_BONUS[1] - PODIUM_BONUS[3] < 40,
+    'which four point cells cover — position cannot decide the race alone',
+  );
+  check(PODIUM_BONUS[5] > 0, 'last place still pays, so nobody stops collecting');
+  for (let p = 2; p <= 5; p++) {
+    check(PODIUM_BONUS[p] < PODIUM_BONUS[p - 1], `P${p} is worth less than P${p - 1}`);
+  }
+  check(FINISH_BONUS > 0, 'and crossing the line at all is worth something');
 }
 
 // ── Entry fee ───────────────────────────────────────────────────────────────
@@ -383,104 +503,70 @@ group('Entry fee (a fifth of a ticket, on any network)');
   check(entryFeeUnits(mainnet) === 200_000n, 'mainnet: a $1.00 ticket means a $0.20 entry');
   check(entryFeeUnits(sepolia) === 2_000n, 'sepolia: a $0.01 ticket means a $0.002 entry');
   check(
-    entryFeeUnits(mainnet) * ENTRIES_PER_TICKET === mainnet,
+    entryFeeUnits(mainnet) * SHARDS_PER_TICKET === mainnet,
     'five entries fund exactly one ticket, with nothing left over',
   );
   check(
-    entryFeeUnits(sepolia) * ENTRIES_PER_TICKET === sepolia,
+    entryFeeUnits(sepolia) * SHARDS_PER_TICKET === sepolia,
     'and the same holds on testnet, where a ticket costs 100× less',
   );
+  check(
+    entryFeeUnits(mainnet) * BigInt(SEATS_PER_RACE) === mainnet,
+    'a full five-seat pot is exactly one ticket — the core of the economy',
+  );
 }
 
-// ── Pool → tickets ──────────────────────────────────────────────────────────
-group('Pool conversion and carry-over');
+// ── Shard vault → tickets ───────────────────────────────────────────────────
+group('Shard vault conversion');
 {
   const price = 1_000_000n;
+  const fee = entryFeeUnits(price);
 
-  const exact = poolToTickets(3_000_000n, price);
-  check(exact.tickets === 3 && exact.carryOutUnits === 0n, 'an exact pool buys whole tickets and carries nothing');
+  const exact = vaultToTickets(3_000_000n, price);
+  check(exact.tickets === 3 && exact.remainderUnits === 0n, 'an exact vault buys whole tickets and keeps nothing back');
 
-  const partial = poolToTickets(3_400_000n, price);
-  check(partial.tickets === 3, 'a part-filled pool buys only whole tickets');
-  check(partial.carryOutUnits === 400_000n, 'and the remainder carries forward, not lost');
+  const partial = vaultToTickets(3_400_000n, price);
+  check(partial.tickets === 3, 'a part-filled vault buys only whole tickets');
+  check(partial.remainderUnits === 400_000n, 'and the remainder stays in the vault, not lost');
   check(
-    partial.spentUnits + partial.carryOutUnits === 3_400_000n,
-    'every base unit is accounted for — spent or carried',
+    partial.spentUnits + partial.remainderUnits === 3_400_000n,
+    'every base unit is accounted for — spent or held',
   );
 
-  const tiny = poolToTickets(200_000n, price);
-  check(tiny.tickets === 0 && tiny.carryOutUnits === 200_000n, 'a quiet day buys nothing and rolls the whole pool over');
+  const tiny = vaultToTickets(200_000n, price);
+  check(tiny.tickets === 0 && tiny.remainderUnits === 200_000n, 'one shard buys nothing and is held for the next win');
 
-  const free = poolToTickets(500_000n, 0n);
+  const free = vaultToTickets(500_000n, 0n);
   check(free.tickets === 0, 'a zero ticket price cannot divide by zero');
-}
 
-// ── Ticket allocation ───────────────────────────────────────────────────────
-group('Ticket allocation down the ladder');
-{
-  const ladder = (n: number) =>
-    Array.from({ length: n }, (_, i) => ({
-      playerId: `0x${String(i).padStart(40, '0')}`,
-      name: `P${i}`,
-      points: 1000 - i * 10,
-    }));
+  // Shard display maths.
+  check(shardsOf(fee * 3n, fee) === 3, 'three entry fees read as three shards');
+  check(shardsOf(0n, fee) === 0, 'an empty vault is zero shards');
+  check(shardsOf(fee, 0n) === 0, 'a zero fee cannot divide by zero either');
+  check(shardsOf(fee * 5n, fee) === Number(SHARDS_PER_TICKET), 'five shards is a whole ticket');
 
-  // Conservation is the property that matters most: we must never mint more
-  // tickets than the pool paid for, nor fewer.
-  let conserved = true;
-  let monotonic = true;
-  for (const players of [1, 2, 3, 5, 12, 40]) {
-    for (const tickets of [0, 1, 2, 3, 7, 25, 100]) {
-      const alloc = allocateTickets(ladder(players), tickets);
-      const total = alloc.reduce((s, a) => s + a.tickets, 0);
-      if (total !== tickets) conserved = false;
-      // Nobody may out-earn someone ranked above them.
-      for (let i = 1; i < alloc.length; i++) {
-        if (alloc[i].tickets > alloc[i - 1].tickets) monotonic = false;
-      }
-    }
+  check(ticketProgress(0n, price) === 0, 'an empty vault shows no progress');
+  check(Math.abs(ticketProgress(fee * 2n, price) - 0.4) < 1e-6, 'two of five shards reads as 40%');
+  check(ticketProgress(price, price) === 0, 'a completed ticket resets the meter rather than pinning it at 100%');
+  check(ticketProgress(price + fee, price) > 0, 'and the overflow starts the next one');
+
+  // Conservation over a long run of wins: money in must equal tickets plus
+  // whatever is still held. This is the property that makes the shard model
+  // honest rather than a rounding trick.
+  let vault = 0n;
+  let minted = 0;
+  for (let i = 0; i < 137; i++) {
+    vault += fee * BigInt((i % 5) + 1);
+    const { tickets, spentUnits } = vaultToTickets(vault, price);
+    minted += tickets;
+    vault -= spentUnits;
   }
-  check(conserved, 'every ticket the pool bought is allocated — never more, never fewer');
-  check(monotonic, 'a lower rank never receives more tickets than a higher rank');
-
-  const one = allocateTickets(ladder(20), 1);
-  check(one[0].tickets === 1, 'a single ticket goes to first place');
-  check(one.slice(1).every((a) => a.tickets === 0), 'and to nobody else');
-
-  const many = allocateTickets(ladder(10), 30);
-  check(many[0].tickets > many[9].tickets, 'a big pool still rewards rank');
-  check(many.filter((a) => a.tickets > 0).length >= 8, `a busy day spreads deep into the board (${many.filter((a) => a.tickets > 0).length}/10 players paid)`);
-  check(many[0].tickets < 30, 'first place does not take the entire pool');
-
-  // Zero-point entries must not dilute the pool.
-  const withZeros = allocateTickets(
-    [...ladder(3), { playerId: '0xzero', name: 'Idle', points: 0 }],
-    4,
-  );
+  const staked = Array.from({ length: 137 }, (_, i) => fee * BigInt((i % 5) + 1)).reduce((a, b) => a + b, 0n);
   check(
-    withZeros.reduce((s, a) => s + a.tickets, 0) === 4 && !withZeros.some((a) => a.name === 'Idle'),
-    'players who scored nothing are excluded from allocation',
+    BigInt(minted) * price + vault === staked,
+    `nothing is created or destroyed across 137 wins (${minted} tickets + ${vault} held)`,
   );
-
-  check(allocateTickets([], 5).length === 0, 'an empty ladder allocates nothing and does not throw');
-
-  // Determinism: the same ladder must always produce the same split, because the
-  // server has to be able to recompute a past day's payout.
-  const a1 = JSON.stringify(allocateTickets(ladder(9), 13));
-  const a2 = JSON.stringify(allocateTickets(ladder(9), 13));
-  check(a1 === a2, 'allocation is deterministic for a given ladder');
-
-  // Ties break on address, not insertion order.
-  const tied = allocateTickets(
-    [
-      { playerId: '0xbbb', name: 'B', points: 500 },
-      { playerId: '0xaaa', name: 'A', points: 500 },
-    ],
-    1,
-  );
-  check(tied[0].name === 'A', 'a points tie breaks deterministically by address');
 }
-
 // ── Summary ─────────────────────────────────────────────────────────────────
 console.log(
   fail === 0

@@ -1,168 +1,306 @@
 'use client';
 
 import Link from 'next/link';
-import { DayCountdown } from '../DrawCountdown';
+import { useEffect, useRef } from 'react';
 import { breakdownRows, ordinal } from '@/lib/points/scoring';
-import type { ScoreBreakdown } from '@/lib/points/scoring';
-
-export type SettlementPayload = {
-  breakdown: ScoreBreakdown;
-  placement: number;
-  pointsAwarded: number;
-  retired: boolean;
-  dayKey: string;
-  dayPoints: number;
-  dayRaces: number;
-  dayRank: number;
-  dayBest: number;
-  lifetimePoints: number;
-  racesCompleted: number;
-  bestRaceScore: number;
-  isPersonalBest: boolean;
-  credits: string;
-  orbRollover: number;
-};
+import { ShardMeter } from '../ShardMeter';
+import { useSound } from '@/lib/audio/SoundProvider';
+import { formatUsdc } from '@/lib/format';
+import type { LobbyView, PlayerProfile } from '@/lib/hooks';
 
 /**
- * The score sheet.
+ * The score sheet, and the moment the money moves.
  *
- * Shown for every run, finished or abandoned. On a DNF the forfeited lines are
- * rendered as explicit zeros rather than hidden, because the player needs to see
- * exactly what quitting cost — that is the whole reason quitting is a decision
- * rather than a trapdoor.
+ * Structured around one question in one line — did you take the pot — because
+ * that is the only thing a player actually wants to know, and everything below
+ * it is the evidence. The standings come before the breakdown deliberately: the
+ * pot is decided by a comparison, so the comparison is the headline and your own
+ * lines are the explanation.
  */
 export function Results({
-  data,
+  lobby,
+  profile,
   onRaceAgain,
-  entriesLeft,
+  canRaceAgain,
+  explorerBase,
 }: {
-  data: SettlementPayload;
+  lobby: LobbyView;
+  profile: PlayerProfile | null;
   onRaceAgain: () => void;
+  canRaceAgain: boolean;
+  /** Network-correct block explorer root, so testnet links don't point at mainnet. */
   explorerBase: string;
-  entriesLeft: number | null;
 }) {
-  const { breakdown, placement, retired } = data;
-  const podium = !retired && placement <= 3;
-  const rows = breakdownRows(breakdown);
-  const outOfEntries = entriesLeft !== null && entriesLeft <= 0;
+  const { play, engine } = useSound();
+  const settlement = lobby.settlement;
+  const breakdown = lobby.myBreakdown;
+  const stung = useRef(false);
+
+  const iWon = !!settlement && settlement.winnerSeat === lobby.mySeat && lobby.mySeat !== null;
+  const fromBehind = iWon && (breakdown?.placement ?? 1) > 1;
+  const shardsWon = iWon ? settlement!.stakedSeats : 0;
+  const ticketsMinted = iWon ? (settlement?.ticketsMinted ?? 0) : 0;
+
+  // One stinger per result, on the first render that has a settlement.
+  useEffect(() => {
+    if (!settlement || stung.current) return;
+    stung.current = true;
+    engine.duckMusic(2.4);
+    if (ticketsMinted > 0) {
+      play('win');
+      setTimeout(() => play('ticket'), 700);
+    } else if (iWon) {
+      play('win');
+    } else {
+      play('lose');
+    }
+  }, [settlement, iWon, ticketsMinted, play, engine]);
+
+  if (!settlement) {
+    return (
+      <div className="mx-auto flex min-h-[50vh] max-w-lg flex-col items-center justify-center gap-5 text-center">
+        <div className="h-12 w-12 animate-spin rounded-full border-2 border-white/10 border-t-[var(--accent)]" />
+        <div>
+          <p className="display font-semibold text-slate-200">Resolving the lobby…</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Waiting on the other seats. Every run is replayed server-side before the pot moves.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const rows = breakdown ? breakdownRows(breakdown) : [];
+  const runnerUp = settlement.standings[1];
+  const margin = runnerUp ? settlement.standings[0].points - runnerUp.points : 0;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
-      {/* ── Headline ──────────────────────────────────────────────── */}
+    <div className="mx-auto max-w-3xl space-y-5 pb-10">
+      {/* ── Headline ────────────────────────────────────────────────── */}
       <div
-        className="card rise p-8 text-center"
-        style={retired ? { borderColor: 'rgba(244,63,94,0.32)' } : undefined}
+        className={`panel rise relative overflow-hidden p-8 text-center ${
+          iWon ? 'win-halo' : ''
+        } ${!iWon && margin > 0 && margin <= 12 ? 'shake' : ''}`}
       >
-        <div className="stat-label">{retired ? 'You left the race' : 'You finished'}</div>
+        {iWon && <div className="absolute inset-x-0 top-0 h-px shimmer" />}
+
+        <div className="eyebrow">
+          {settlement.refunded
+            ? 'No result'
+            : iWon
+              ? 'You took the pot'
+              : settlement.houseWins
+                ? 'The house took the pot'
+                : `${settlement.winnerName} took the pot`}
+        </div>
 
         <div
-          className="num mt-2 text-6xl font-extrabold leading-none sm:text-7xl"
-          style={{
-            fontFamily: 'var(--font-display)',
-            color: retired ? 'var(--danger)' : podium ? 'var(--gold)' : 'var(--text)',
-            textShadow: podium ? '0 0 50px rgba(251,191,36,0.4)' : 'none',
-          }}
+          className={`display count-in mt-3 text-5xl leading-none sm:text-7xl ${
+            iWon ? 'text-[var(--gold)] glow-gold' : 'text-slate-200'
+          }`}
         >
-          {retired ? 'DNF' : ordinal(placement)}
+          {settlement.refunded ? 'VOID' : iWon ? formatUsdc(settlement.potUnits) : `${breakdown?.total ?? 0} pts`}
         </div>
 
-        {retired && (
-          <p className="mt-3 text-sm text-slate-400">
-            Stopped {(breakdown.progress * 100).toFixed(0)}% down the track. You kept what you
-            collected; the finish bonus, podium and clean-run bonus all scored zero.
+        {settlement.refunded ? (
+          <p className="mt-4 text-sm text-slate-400">
+            Nobody scored a point, so every stake was returned. Your entry is back in your balance.
+          </p>
+        ) : iWon ? (
+          <p className="mt-4 text-sm text-slate-300">
+            <span className="num font-bold text-[var(--gold)]">{shardsWon}</span>{' '}
+            {shardsWon === 1 ? 'shard' : 'shards'} into your vault
+            {margin > 0 && (
+              <>
+                {' '}
+                · won by <span className="num text-slate-200">{margin}</span>{' '}
+                {margin === 1 ? 'point' : 'points'}
+              </>
+            )}
+          </p>
+        ) : (
+          <p className="mt-4 text-sm text-slate-400">
+            {breakdown?.retired
+              ? 'You left the race, which forfeits the finish bonus, your position and the clean-run bonus.'
+              : `${settlement.standings[0].points} points took it. You were ${
+                  (settlement.standings.findIndex((s) => s.index === lobby.mySeat) ?? 0) + 1
+                }${suffix((settlement.standings.findIndex((s) => s.index === lobby.mySeat) ?? 0) + 1)} on score.`}
           </p>
         )}
 
-        <div className="num mt-4 text-3xl font-bold text-[var(--accent)]">
-          +{data.pointsAwarded} points
-        </div>
-
-        {data.isPersonalBest && data.pointsAwarded > 0 && (
-          <div className="chip chip-gold pop mt-4">★ New personal best</div>
+        {/* The clearest possible demonstration of the rule. */}
+        {fromBehind && (
+          <div className="chip chip-gold pop mt-5">
+            ★ Finished {ordinal(breakdown!.placement)} — and still took the pot
+          </div>
         )}
       </div>
 
-      {/* ── Where that puts you today ──────────────────────────────── */}
-      <div className="card rise p-7" style={{ animationDelay: '80ms' }}>
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="chip chip-live">Today&apos;s ladder</div>
-          <div className="text-xs text-slate-500">
-            resets in <DayCountdown closesAt={dayClose(data.dayKey)} />
+      {/* ── Ticket minted ───────────────────────────────────────────── */}
+      {ticketsMinted > 0 && (
+        <div
+          className="panel panel-lit panel-gold rise p-7 text-center"
+          style={{ animationDelay: '90ms' }}
+        >
+          <div className="display text-2xl text-[var(--gold)] glow-gold">
+            🎟 {ticketsMinted} Megapot {ticketsMinted === 1 ? 'ticket' : 'tickets'} minted
           </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat label="Rank" value={`#${data.dayRank}`} accent />
-          <Stat label="Points today" value={data.dayPoints.toLocaleString()} />
-          <Stat label="Races today" value={data.dayRaces} />
-          <Stat label="Best run" value={data.dayBest} />
-        </div>
-
-        <p className="mt-5 text-sm leading-relaxed text-slate-400">
-          Every entry fee today is pooled. When the day closes at 17:00 UTC the pool buys real
-          Megapot tickets and they&apos;re minted straight to the top of this board — so the only
-          thing between you and a ticket is how far you can climb before then.
-        </p>
-      </div>
-
-      {/* ── Breakdown ──────────────────────────────────────────────── */}
-      <div className="card rise p-7" style={{ animationDelay: '160ms' }}>
-        <div className="chip mb-5">Score sheet</div>
-        <div className="divide-y divide-white/[0.06]">
-          {rows.map((row) => (
-            <div key={row.label} className="flex items-center justify-between py-2.5">
-              <div>
-                <div
-                  className={`text-sm font-medium ${
-                    row.forfeited && row.value === 0 ? 'text-slate-500' : 'text-slate-200'
-                  }`}
+          <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-slate-400">
+            Bought from Megapot&apos;s own contract with the protocol picking the numbers, and
+            minted straight to your wallet. It is in the next draw whether this tab is open or not.
+          </p>
+          {settlement.txHashes.length > 0 && (
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {settlement.txHashes.map((h) => (
+                <a
+                  key={h}
+                  href={`${explorerBase}/tx/${h}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="chip chip-gold hover:underline"
                 >
-                  {row.label}
-                </div>
-                {row.hint && <div className="text-xs text-slate-500">{row.hint}</div>}
-              </div>
+                  {h.slice(0, 10)}…
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {settlement.mintError && iWon && (
+        <div className="panel rise border-[var(--gold)]/30 p-5 text-sm text-[var(--gold)]">
+          {settlement.mintError} Your shards are safe in the vault and the ticket buys on the next
+          attempt.
+        </div>
+      )}
+
+      {/* ── Standings ───────────────────────────────────────────────── */}
+      <div className="panel rise p-6 sm:p-7" style={{ animationDelay: '140ms' }}>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="chip chip-violet">Final standings</div>
+          <span className="text-xs text-slate-500">ranked by score, not by finish</span>
+        </div>
+
+        <div className="stagger space-y-2">
+          {settlement.standings.map((s, i) => {
+            const isMe = s.index === lobby.mySeat;
+            return (
               <div
-                className={`num text-lg font-bold ${
-                  row.value < 0
-                    ? 'text-[var(--danger)]'
-                    : row.value === 0
-                      ? 'text-slate-600'
-                      : 'text-slate-100'
+                key={s.index}
+                className={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 ${
+                  s.isWinner
+                    ? 'border-[var(--gold)]/45 bg-[var(--gold)]/[0.07]'
+                    : isMe
+                      ? 'you-row border-[var(--accent)]/40 bg-[var(--accent)]/[0.06]'
+                      : 'border-white/[0.07] bg-white/[0.02]'
                 }`}
               >
-                {row.value > 0 ? '+' : ''}
-                {row.value}
-              </div>
-            </div>
-          ))}
-          <div className="flex items-center justify-between pt-3">
-            <div className="font-bold text-slate-100">Total</div>
-            <div className="num text-2xl font-extrabold text-[var(--accent)]">
-              +{breakdown.total}
-            </div>
-          </div>
-        </div>
+                <span className="num w-5 text-sm font-bold text-slate-500">{i + 1}</span>
 
-        {data.orbRollover > 0 && (
-          <p className="mt-5 text-center text-sm text-[var(--gold)]">
-            ★ The Jackpot Orb has rolled over {data.orbRollover}{' '}
-            {data.orbRollover === 1 ? 'race' : 'races'} — worth more in the next one.
-          </p>
-        )}
+                <div className="min-w-0 flex-1">
+                  <div
+                    className={`display truncate text-sm font-semibold ${
+                      s.isWinner ? 'text-[var(--gold)]' : isMe ? 'text-[var(--accent)]' : 'text-slate-200'
+                    }`}
+                  >
+                    {isMe ? 'You' : s.name}
+                    {s.kind === 'bot' && <span className="ml-2 text-[10px] text-slate-600">HOUSE</span>}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {s.retired
+                      ? `DNF at ${(s.progress * 100).toFixed(0)}%`
+                      : `finished ${ordinal(s.placement)}`}
+                  </div>
+                </div>
+
+                <span className="num text-lg font-bold text-slate-100">{s.points}</span>
+                {s.isWinner && <span className="chip chip-gold">POT</span>}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="flex flex-wrap justify-center gap-3 pb-8">
+      {/* ── Your breakdown ──────────────────────────────────────────── */}
+      {breakdown && (
+        <div className="panel rise p-6 sm:p-7" style={{ animationDelay: '200ms' }}>
+          <div className="chip mb-5">Your score sheet</div>
+          <div className="divide-y divide-white/[0.06]">
+            {rows.map((row) => (
+              <div key={row.label} className="flex items-center justify-between py-2.5">
+                <div>
+                  <div
+                    className={`text-sm font-medium ${
+                      row.forfeited && row.value === 0 ? 'text-slate-500' : 'text-slate-200'
+                    }`}
+                  >
+                    {row.label}
+                  </div>
+                  {row.hint && <div className="text-xs text-slate-500">{row.hint}</div>}
+                </div>
+                <div
+                  className={`num text-lg font-bold ${
+                    row.value < 0
+                      ? 'text-[var(--danger)]'
+                      : row.value === 0
+                        ? 'text-slate-600'
+                        : 'text-slate-100'
+                  }`}
+                >
+                  {row.value > 0 ? '+' : ''}
+                  {row.value}
+                </div>
+              </div>
+            ))}
+            <div className="flex items-center justify-between pt-3">
+              <div className="display font-semibold text-slate-100">Total</div>
+              <div className="num text-2xl font-bold text-[var(--accent)]">{breakdown.total}</div>
+            </div>
+          </div>
+
+          {lobby.rolloverCount > 0 && (
+            <p className="mt-5 text-center text-sm text-[var(--gold)]">
+              ★ The Jackpot Orb has rolled over {lobby.rolloverCount}{' '}
+              {lobby.rolloverCount === 1 ? 'race' : 'races'} — worth more in the next one.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── Vault progress ──────────────────────────────────────────── */}
+      {profile && (
+        <div className="panel rise p-6" style={{ animationDelay: '260ms' }}>
+          <div className="flex items-center justify-between">
+            <div className="eyebrow">Shard vault</div>
+            <span className="num text-sm font-bold text-[var(--gold)]">
+              {profile.vault.shards % profile.vault.shardsPerTicket}/
+              {profile.vault.shardsPerTicket}
+            </span>
+          </div>
+          <div className="mt-3">
+            <ShardMeter
+              shards={profile.vault.shards}
+              perTicket={profile.vault.shardsPerTicket}
+              justWon={shardsWon}
+              size="lg"
+            />
+          </div>
+          <p className="mt-3 text-xs text-slate-500">
+            Balance <span className="num text-slate-300">{formatUsdc(profile.balance.creditsUnits)}</span> ·{' '}
+            <span className="num text-slate-300">{profile.balance.entriesAffordable}</span> entries left
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap justify-center gap-3">
         <button
           onClick={onRaceAgain}
-          disabled={outOfEntries}
+          disabled={!canRaceAgain}
           className="btn btn-primary px-8 py-3.5 text-base"
         >
-          {outOfEntries ? 'Out of entries today' : 'Race again'}
+          {canRaceAgain ? 'Race again' : 'Top up to race again'}
         </button>
-        <Link href="/leaderboard" className="btn btn-ghost px-6 py-3.5 text-base">
-          Leaderboard
-        </Link>
-        <Link href="/profile" className="btn btn-ghost px-6 py-3.5 text-base">
+        <Link href="/vault" className="btn btn-ghost px-6 py-3.5 text-base">
           Your vault
         </Link>
       </div>
@@ -170,23 +308,8 @@ export function Results({
   );
 }
 
-/** The 17:00 UTC close of the vault day identified by `key`. */
-function dayClose(key: string): string {
-  const [y, m, d] = key.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d, 17)).toISOString();
-}
-
-function Stat({
-  label, value, accent,
-}: { label: string; value: string | number; accent?: boolean }) {
-  return (
-    <div>
-      <div className="stat-label">{label}</div>
-      <div
-        className={`num mt-1 text-2xl font-extrabold ${accent ? 'text-[var(--accent)]' : 'text-slate-100'}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
+function suffix(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
 }

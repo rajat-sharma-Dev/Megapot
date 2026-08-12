@@ -46,4 +46,29 @@ export const ERC20_ABI = [
     inputs: [],
     outputs: [{ type: 'uint8' }],
   },
+  {
+    type: 'function',
+    name: 'transfer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
+  /**
+   * Needed to READ deposits, not to make them. A deposit is credited by finding
+   * this event in the receipt of a transaction the player claims to have sent,
+   * which is the only way to know a transfer really happened and really came
+   * from them.
+   */
+  {
+    type: 'event',
+    name: 'Transfer',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'value', type: 'uint256', indexed: false },
+    ],
+  },
 ] as const satisfies Abi;

@@ -18,8 +18,9 @@ import { formatUsdc, type DrawingState } from '../src/lib/megapot/drawing';
 // as "$0.00". The display formatter keeps significant digits, so the economy
 // section uses that instead.
 import { formatUsdc as formatPrecise } from '../src/lib/format';
-import { entryFeeUnits, ENTRIES_PER_TICKET } from '../src/lib/vault/economy';
-import { allocateTickets, poolToTickets } from '../src/lib/vault/allocate';
+import {
+  entryFeeUnits, vaultToTickets, SHARDS_PER_TICKET, SEATS_PER_RACE,
+} from '../src/lib/vault/economy';
 
 const NETWORKS = [
   { name: 'Base Mainnet', chain: base, rpc: 'https://mainnet.base.org', addrs: ADDRESSES.mainnet },
@@ -134,47 +135,59 @@ async function checkRandomBuyer(n: (typeof NETWORKS)[number]) {
 }
 
 /**
- * The vault economy, derived from each network's LIVE ticket price.
+ * The race economy, derived from each network's LIVE ticket price.
  *
  * This is the check that would have caught hardcoding "$0.20": on Sepolia a
  * ticket costs $0.01, so a fixed 20-cent entry would be twenty times the price
  * of the thing it is supposed to be buying a fifth of.
  */
 function checkEconomy(label: string, ticketPrice: bigint) {
-  console.log(`\n\x1b[1mVault economy — ${label}\x1b[0m  (ticket ${formatPrecise(ticketPrice)})`);
+  console.log(`\n\x1b[1mRace economy — ${label}\x1b[0m  (ticket ${formatPrecise(ticketPrice)})`);
 
   const fee = entryFeeUnits(ticketPrice);
   ok(`entry fee = ${formatPrecise(fee)} (a fifth of a ticket)`);
 
-  if (fee * ENTRIES_PER_TICKET === ticketPrice) {
-    ok(`${ENTRIES_PER_TICKET} entries fund exactly one ticket, no rounding loss`);
+  if (fee * SHARDS_PER_TICKET === ticketPrice) {
+    ok(`${SHARDS_PER_TICKET} shards fund exactly one ticket, no rounding loss`);
   } else {
-    bad(`${ENTRIES_PER_TICKET} × ${fee} = ${fee * ENTRIES_PER_TICKET}, expected ${ticketPrice}`);
+    bad(`${SHARDS_PER_TICKET} × ${fee} = ${fee * SHARDS_PER_TICKET}, expected ${ticketPrice}`);
   }
 
-  // A day with 23 entries: whole tickets bought, remainder carried.
-  const pool = fee * 23n;
-  const { tickets, spentUnits, carryOutUnits } = poolToTickets(pool, ticketPrice);
-  if (spentUnits + carryOutUnits === pool) {
-    ok(`23 entries (${formatPrecise(pool)}) → ${tickets} tickets, ${formatPrecise(carryOutUnits)} carried`);
+  // The core claim of the design: a full lobby is exactly one ticket.
+  const fullPot = fee * BigInt(SEATS_PER_RACE);
+  if (fullPot === ticketPrice) {
+    ok(`a full ${SEATS_PER_RACE}-seat pot (${formatPrecise(fullPot)}) is exactly one ticket`);
   } else {
-    bad(`pool accounting lost value: ${spentUnits} + ${carryOutUnits} != ${pool}`);
+    bad(`full pot ${fullPot} != ticket price ${ticketPrice}`);
   }
 
-  // And those tickets deal out down a ladder without minting or losing any.
-  const ladder = Array.from({ length: 9 }, (_, i) => ({
-    playerId: `0x${String(i).padStart(40, '0')}`,
-    name: `P${i}`,
-    points: 900 - i * 70,
-  }));
-  const alloc = allocateTickets(ladder, tickets);
-  const dealt = alloc.reduce((s, a) => s + a.tickets, 0);
-  const monotone = alloc.every((a, i) => i === 0 || a.tickets <= alloc[i - 1].tickets);
-
-  if (dealt === tickets && monotone) {
-    ok(`allocated ${dealt}/${tickets} down a 9-player ladder: [${alloc.map((a) => a.tickets).join(',')}]`);
+  // A player who wins 23 shards over time: whole tickets minted, remainder held.
+  const vault = fee * 23n;
+  const { tickets, spentUnits, remainderUnits } = vaultToTickets(vault, ticketPrice);
+  if (spentUnits + remainderUnits === vault) {
+    ok(`23 shards (${formatPrecise(vault)}) → ${tickets} tickets, ${formatPrecise(remainderUnits)} held`);
   } else {
-    bad(`allocation broken: dealt ${dealt} of ${tickets}, monotone=${monotone}`);
+    bad(`vault accounting lost value: ${spentUnits} + ${remainderUnits} != ${vault}`);
+  }
+
+  // Winner-take-all pots of every size must conserve value exactly.
+  let held = 0n;
+  let minted = 0;
+  let staked = 0n;
+  for (let seats = 1; seats <= SEATS_PER_RACE; seats++) {
+    for (let round = 0; round < 4; round++) {
+      const pot = fee * BigInt(seats);
+      staked += pot;
+      held += pot;
+      const conv = vaultToTickets(held, ticketPrice);
+      minted += conv.tickets;
+      held -= conv.spentUnits;
+    }
+  }
+  if (BigInt(minted) * ticketPrice + held === staked) {
+    ok(`20 pots of mixed size conserve exactly: ${minted} tickets + ${formatPrecise(held)} held`);
+  } else {
+    bad(`pot conservation broken: ${minted} tickets + ${held} != ${staked}`);
   }
 }
 

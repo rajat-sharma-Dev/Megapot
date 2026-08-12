@@ -9,9 +9,9 @@ export const dynamic = 'force-dynamic';
  * Tickets for a wallet.
  *
  * `local` is what Rally Vault minted, with the provenance the chain doesn't
- * record — which vault day paid for it and what rank earned it. `onchain` is
- * Megapot's own view of the same wallet; showing both proves the tickets are real
- * and not just rows in our database.
+ * record — which race pot paid for it. `onchain` is Megapot's own view of the
+ * same wallet; showing both is what proves the tickets are real and not just
+ * rows in our database.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);

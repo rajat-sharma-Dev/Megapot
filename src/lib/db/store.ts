@@ -1,11 +1,11 @@
 /**
  * Persistence.
  *
- * A JSON-file store behind a narrow async interface. Chosen deliberately over
- * Supabase for the jam: zero external setup means the app runs and tests
+ * A JSON-file store behind a narrow async interface. Chosen deliberately over a
+ * hosted database for the jam: zero external setup means the app runs and tests
  * end-to-end on a clean checkout with no credentials. Every function here is
- * async and the shapes are relational, so swapping in Postgres later is a
- * driver change, not a rewrite.
+ * async and the shapes are relational, so swapping in Postgres later is a driver
+ * change, not a rewrite.
  *
  * USDC amounts are stored as decimal strings of 6-decimal base units, never as
  * numbers — a float cannot hold these exactly and this money buys real tickets.
@@ -14,41 +14,119 @@
 import 'server-only';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { vaultDayKey, windowForKey } from '../vault/day';
+import type { InputLog } from '../game/replay';
+import type { BotSkill } from '../game/bots';
+import type { ScoreBreakdown } from '../points/scoring';
+
+// ─── Shapes ─────────────────────────────────────────────────────────────────
 
 export type Player = {
   id: string; // lowercased wallet address
   name: string;
-  /** Spendable balance, in USDC base units (6dp), as a decimal string. */
-  credits: string;
-  lifetimePoints: number;
-  racesCompleted: number;
-  /** Races the player bailed out of. Shown on the profile, not punished further. */
+  /**
+   * Spendable balance, in USDC base units. Funded by real deposits and spent on
+   * entry fees.
+   */
+  creditsUnits: string;
+  /**
+   * The shard vault: pot winnings held until they add up to a whole ticket.
+   * Denominated in base units rather than a shard counter, because the ticket
+   * price is live protocol state and can move between winning a shard and
+   * spending it.
+   */
+  vaultUnits: string;
+
+  lifetimeDepositedUnits: string;
+  lifetimeWithdrawnUnits: string;
+  lifetimeWageredUnits: string;
+  lifetimeWonUnits: string;
+
+  racesPlayed: number;
+  racesWon: number;
   racesRetired: number;
+  lifetimePoints: number;
   bestRaceScore: number;
-  totalStolen: number; // for the "Most Feared Racer" board
+  totalStolen: number;
   ticketsEarned: number;
-  /** Last vault day on which the free-entry grant was applied. */
-  lastGrantDay: string | null;
+
   createdAt: string;
   updatedAt: string;
 };
 
-export type RaceRecord = {
+export type SeatKind = 'human' | 'bot' | 'empty';
+
+export type SeatRecord = {
+  index: number;
+  kind: SeatKind;
+  /** Wallet address for a human seat, `house_<i>` for a bot, '' while empty. */
+  id: string;
+  name: string;
+  skill?: BotSkill;
+  botSeed?: number;
+  /** True once this seat's entry fee is in the pot. */
+  staked: boolean;
+  joinedAt: string | null;
+  submittedAt: string | null;
+  /**
+   * The submitted run. Kept only until the lobby settles and then pruned — an
+   * input log is ~4,000 numbers and there is no reason to carry five of them
+   * per race forever.
+   */
+  inputs: InputLog | null;
+  points: number | null;
+  placement: number | null;
+  retired: boolean | null;
+  breakdown: ScoreBreakdown | null;
+};
+
+export type LobbyState = 'open' | 'locked' | 'settled';
+
+export type StandingRow = {
+  index: number;
+  id: string;
+  name: string;
+  kind: 'human' | 'bot';
+  points: number;
+  placement: number;
+  retired: boolean;
+  progress: number;
+  isWinner: boolean;
+};
+
+export type LobbySettlement = {
+  settledAt: string;
+  winnerSeat: number | null;
+  winnerId: string | null;
+  winnerName: string | null;
+  winnerKind: 'human' | 'bot' | null;
+  potUnits: string;
+  stakedSeats: number;
+  /** True when a house seat outscored every human and the pot went back. */
+  houseWins: boolean;
+  /** True when nobody scored, so every stake was returned. */
+  refunded: boolean;
+  standings: StandingRow[];
+  /** Whole tickets the winner's vault could afford immediately after the win. */
+  ticketsMinted: number;
+  txHashes: string[];
+  mintError: string | null;
+};
+
+export type Lobby = {
   id: string;
   seed: number;
-  playerId: string;
-  /** What the player paid to enter, in base units. */
-  entryFeeUnits: string;
-  /** Vault day this race counts toward. */
-  dayKey: string;
-  rolloverCount: number;
+  state: LobbyState;
   createdAt: string;
-  /** Set once the result is submitted; prevents replaying one race for points. */
-  settledAt: string | null;
-  placement: number | null;
-  pointsAwarded: number | null;
-  retired: boolean | null;
+  /** When an under-filled lobby stops waiting and fills with house seats. */
+  fillDeadline: string;
+  /** When a locked lobby settles regardless of who hasn't driven yet. */
+  submitDeadline: string | null;
+  entryFeeUnits: string;
+  ticketPriceUnits: string;
+  drawingId: string;
+  rolloverCount: number;
+  seats: SeatRecord[];
+  settlement: LobbySettlement | null;
 };
 
 export type TicketRecord = {
@@ -56,67 +134,42 @@ export type TicketRecord = {
   playerId: string;
   txHash: string;
   drawingId: string;
-  /** Tickets bought in this transaction. */
   count: number;
-  /** The vault day whose pool paid for it. */
-  dayKey: string;
-  /** Where the player finished on that day's ladder. */
-  rank: number;
-  points: number;
+  /** The lobby whose pot paid for it. */
+  lobbyId: string | null;
   network: string;
   createdAt: string;
 };
 
-/** One player's standing on one day's ladder. */
-export type LadderEntry = {
-  playerId: string;
-  name: string;
-  points: number;
-  races: number;
-  retired: number;
-  bestScore: number;
-  updatedAt: string;
-};
+export type LedgerKind = 'deposit' | 'withdrawal' | 'entry' | 'win' | 'refund' | 'ticket';
 
-export type DayAllocation = {
+export type LedgerEntry = {
+  id: string;
   playerId: string;
-  name: string;
-  rank: number;
-  points: number;
-  tickets: number;
+  kind: LedgerKind;
+  /** Signed, in base units: positive credits the player, negative debits them. */
+  deltaUnits: string;
+  /** On-chain hash for deposits and withdrawals, null for internal movements. */
   txHash: string | null;
-  error: string | null;
-};
-
-export type DaySettlement = {
-  settledAt: string;
-  ticketPriceUnits: string;
-  drawingId: string;
-  totalPoolUnits: string;
-  ticketsBought: number;
-  carryOutUnits: string;
-  allocations: DayAllocation[];
-};
-
-export type VaultDay = {
-  key: string;
-  opensAt: string;
-  closesAt: string;
-  /** Carried over from the previous day's unspent remainder. */
-  carryInUnits: string;
-  /** Entry fees collected today, including the carry-in. */
-  poolUnits: string;
-  entries: number;
-  settlement: DaySettlement | null;
+  lobbyId: string | null;
+  note: string | null;
+  createdAt: string;
 };
 
 type DbShape = {
   players: Record<string, Player>;
-  races: Record<string, RaceRecord>;
+  lobbies: Record<string, Lobby>;
   tickets: TicketRecord[];
-  days: Record<string, VaultDay>;
-  /** dayKey -> playerId -> standing */
-  ladder: Record<string, Record<string, LadderEntry>>;
+  ledger: LedgerEntry[];
+  /**
+   * The house float — the bankroll that stakes bot seats.
+   *
+   * Bot seats are not a subsidy. The house stakes an entry fee like everyone
+   * else and keeps the pot when one of its seats outscores every human, so a
+   * solo player is genuinely playing against something rather than against a
+   * mirror. The float can run dry, and when it does bot seats stop staking.
+   */
+  houseFloatUnits: string;
   /** Consecutive races where the Jackpot Orb went unclaimed — it stacks. */
   orbRollover: number;
 };
@@ -124,12 +177,15 @@ type DbShape = {
 const DATA_DIR = process.env.RALLY_DATA_DIR || path.join(process.cwd(), '.data');
 const DB_FILE = path.join(DATA_DIR, 'rally-vault.json');
 
+/** Seeded once, on a fresh database, so the very first solo race has an opponent. */
+const HOUSE_FLOAT_SEED = process.env.RALLY_HOUSE_FLOAT ?? '2000000'; // $2.00
+
 const EMPTY: DbShape = {
   players: {},
-  races: {},
+  lobbies: {},
   tickets: [],
-  days: {},
-  ladder: {},
+  ledger: [],
+  houseFloatUnits: HOUSE_FLOAT_SEED,
   orbRollover: 0,
 };
 
@@ -143,23 +199,24 @@ const EMPTY: DbShape = {
  * in memory, un-hydrated, and the dev server keeps serving them until someone
  * thinks to restart it. Bump this whenever the persisted shape changes.
  */
-const CACHE_KEY = '__rallyDb_v2';
+const CACHE_KEY = '__rallyDb_v3';
 
 const g = globalThis as unknown as Record<string, unknown> & {
   __rallyWriteQueue?: Promise<void>;
 };
 
 const cached = () => g[CACHE_KEY] as DbShape | undefined;
-const setCached = (db: DbShape) => { g[CACHE_KEY] = db; };
+const setCached = (db: DbShape) => {
+  g[CACHE_KEY] = db;
+};
 
 /**
  * Parse a persisted USDC amount.
  *
- * Money is stored as a decimal string of base units, but this file can predate
- * the field entirely, so a bare `BigInt(value)` on it throws
- * "Cannot convert undefined to a BigInt" — which is exactly what a stale data
- * file did on the first race after the schema changed. Anything unparseable
- * reads as zero rather than taking down the request.
+ * Money is stored as a decimal string of base units, but this file outlives
+ * schema changes and can predate a field entirely, so a bare `BigInt(value)` on
+ * it throws "Cannot convert undefined to a BigInt". Anything unparseable reads
+ * as zero rather than taking down the request.
  */
 export const toUnits = (v: unknown): bigint => {
   if (typeof v === 'bigint') return v;
@@ -169,29 +226,39 @@ export const toUnits = (v: unknown): bigint => {
 };
 
 const int = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+const now = () => new Date().toISOString();
+
+export const normalizeAddress = (a: string) => a.trim().toLowerCase();
 
 /**
  * Fill in every field a Player is supposed to have.
  *
- * The store is a JSON file on disk, so it survives deploys and schema changes and
- * will happily hand back rows written by an older version of this code. Reading
- * is therefore the right place to reconcile shape — every code path downstream
- * gets a complete record and no caller has to defend itself. Unknown legacy keys
- * are left alone rather than dropped, so nothing is silently destroyed.
+ * The store is a JSON file on disk, so it survives deploys and schema changes
+ * and will happily hand back rows written by an older version of this code.
+ * Reading is therefore the right place to reconcile shape — every code path
+ * downstream gets a complete record and no caller has to defend itself. Unknown
+ * legacy keys are left alone rather than dropped, so nothing is silently
+ * destroyed.
  */
-function hydratePlayer(raw: Partial<Player> & { id: string }): Player {
+function hydratePlayer(raw: Partial<Player> & { id: string; credits?: unknown }): Player {
   return {
     ...raw,
     id: raw.id,
     name: raw.name || `Racer ${raw.id.slice(2, 6).toUpperCase()}`,
-    credits: toUnits(raw.credits).toString(),
-    lifetimePoints: int(raw.lifetimePoints),
-    racesCompleted: int(raw.racesCompleted),
+    // `credits` was the field name before deposits became real money.
+    creditsUnits: toUnits(raw.creditsUnits ?? raw.credits).toString(),
+    vaultUnits: toUnits(raw.vaultUnits).toString(),
+    lifetimeDepositedUnits: toUnits(raw.lifetimeDepositedUnits).toString(),
+    lifetimeWithdrawnUnits: toUnits(raw.lifetimeWithdrawnUnits).toString(),
+    lifetimeWageredUnits: toUnits(raw.lifetimeWageredUnits).toString(),
+    lifetimeWonUnits: toUnits(raw.lifetimeWonUnits).toString(),
+    racesPlayed: int(raw.racesPlayed),
+    racesWon: int(raw.racesWon),
     racesRetired: int(raw.racesRetired),
+    lifetimePoints: int(raw.lifetimePoints),
     bestRaceScore: int(raw.bestRaceScore),
     totalStolen: int(raw.totalStolen),
     ticketsEarned: int(raw.ticketsEarned),
-    lastGrantDay: typeof raw.lastGrantDay === 'string' ? raw.lastGrantDay : null,
     createdAt: raw.createdAt || now(),
     updatedAt: raw.updatedAt || now(),
   };
@@ -210,16 +277,14 @@ async function load(): Promise<DbShape> {
 
   const db: DbShape = { ...structuredClone(EMPTY), ...parsed };
 
-  // Reconcile anything written by an earlier schema.
   for (const [id, raw] of Object.entries(db.players ?? {})) {
     db.players[id] = hydratePlayer({ ...(raw as Partial<Player>), id });
   }
-  for (const day of Object.values(db.days ?? {})) {
-    day.poolUnits = toUnits(day.poolUnits).toString();
-    day.carryInUnits = toUnits(day.carryInUnits).toString();
-    day.entries = int(day.entries);
-  }
   if (!Array.isArray(db.tickets)) db.tickets = [];
+  if (!Array.isArray(db.ledger)) db.ledger = [];
+  if (!db.lobbies || typeof db.lobbies !== 'object') db.lobbies = {};
+  db.houseFloatUnits = toUnits(db.houseFloatUnits ?? HOUSE_FLOAT_SEED).toString();
+  db.orbRollover = int(db.orbRollover);
 
   setCached(db);
   return db;
@@ -237,29 +302,17 @@ async function persist(): Promise<void> {
   return g.__rallyWriteQueue;
 }
 
-const now = () => new Date().toISOString();
-export const normalizeAddress = (a: string) => a.trim().toLowerCase();
+/** Flush pending mutations. Callers that mutate a Lobby in place call this. */
+export const save = persist;
 
 // ─── Players ────────────────────────────────────────────────────────────────
 
 export async function getOrCreatePlayer(address: string, name?: string): Promise<Player> {
   const db = await load();
   const id = normalizeAddress(address);
+
   if (!db.players[id]) {
-    db.players[id] = {
-      id,
-      name: name || `Racer ${id.slice(2, 6).toUpperCase()}`,
-      credits: '0',
-      lifetimePoints: 0,
-      racesCompleted: 0,
-      racesRetired: 0,
-      bestRaceScore: 0,
-      totalStolen: 0,
-      ticketsEarned: 0,
-      lastGrantDay: null,
-      createdAt: now(),
-      updatedAt: now(),
-    };
+    db.players[id] = hydratePlayer({ id, name: name || `Racer ${id.slice(2, 6).toUpperCase()}` });
     await persist();
   } else if (name && db.players[id].name !== name) {
     db.players[id].name = name;
@@ -289,176 +342,149 @@ export async function listPlayers(): Promise<Player[]> {
   return Object.values(db.players);
 }
 
-/** Move credits. `delta` may be negative; the balance is never left below zero. */
-export async function adjustCredits(id: string, delta: bigint): Promise<bigint> {
+/**
+ * Move money on a player's balance and write the ledger row in the same step.
+ *
+ * Deliberately one function rather than two: an adjustment without a ledger row
+ * is money that appears from nowhere, and this is the only place either can
+ * happen. `field` picks which of the two balances moves — spendable credits, or
+ * the shard vault.
+ */
+export async function adjustBalance(opts: {
+  playerId: string;
+  field: 'creditsUnits' | 'vaultUnits';
+  deltaUnits: bigint;
+  kind: LedgerKind;
+  txHash?: string | null;
+  lobbyId?: string | null;
+  note?: string | null;
+}): Promise<Player> {
   const db = await load();
-  const key = normalizeAddress(id);
+  const key = normalizeAddress(opts.playerId);
   const p = db.players[key];
   if (!p) throw new Error(`Unknown player ${key}`);
 
-  const next = toUnits(p.credits) + delta;
-  if (next < 0n) throw new Error('Insufficient credits');
+  const next = toUnits(p[opts.field]) + opts.deltaUnits;
+  if (next < 0n) {
+    throw new Error(
+      `Insufficient ${opts.field === 'creditsUnits' ? 'balance' : 'vault'}: ` +
+        `have ${p[opts.field]}, need ${-opts.deltaUnits} base units`,
+    );
+  }
 
-  p.credits = next.toString();
+  p[opts.field] = next.toString();
   p.updatedAt = now();
+
+  db.ledger.push({
+    id: `${Date.now().toString(36)}-${db.ledger.length}`,
+    playerId: key,
+    kind: opts.kind,
+    deltaUnits: opts.deltaUnits.toString(),
+    txHash: opts.txHash ?? null,
+    lobbyId: opts.lobbyId ?? null,
+    note: opts.note ?? null,
+    createdAt: now(),
+  });
+
+  await persist();
+  return p;
+}
+
+export async function listLedger(playerId?: string, limit = 50): Promise<LedgerEntry[]> {
+  const db = await load();
+  const all = [...db.ledger].reverse();
+  const filtered = playerId ? all.filter((e) => e.playerId === normalizeAddress(playerId)) : all;
+  return filtered.slice(0, limit);
+}
+
+/**
+ * Has this on-chain transaction already been credited?
+ *
+ * The deposit route is the one place a user can make us create money, so it has
+ * to be idempotent against a replayed request. The transaction hash is the
+ * natural idempotency key.
+ */
+export async function ledgerHasTx(txHash: string): Promise<boolean> {
+  const db = await load();
+  const h = txHash.toLowerCase();
+  return db.ledger.some((e) => e.txHash?.toLowerCase() === h);
+}
+
+// ─── House float ────────────────────────────────────────────────────────────
+
+export async function getHouseFloat(): Promise<bigint> {
+  return toUnits((await load()).houseFloatUnits);
+}
+
+/**
+ * Move the house float. Refuses to go negative, which is what stops the house
+ * from staking seats it cannot cover.
+ */
+export async function adjustHouseFloat(deltaUnits: bigint): Promise<bigint> {
+  const db = await load();
+  const next = toUnits(db.houseFloatUnits) + deltaUnits;
+  if (next < 0n) throw new Error('House float cannot cover this stake');
+  db.houseFloatUnits = next.toString();
   await persist();
   return next;
 }
 
-// ─── Vault days ─────────────────────────────────────────────────────────────
+// ─── Lobbies ────────────────────────────────────────────────────────────────
+
+export async function createLobby(lobby: Lobby): Promise<Lobby> {
+  const db = await load();
+  db.lobbies[lobby.id] = lobby;
+  await persist();
+  return lobby;
+}
+
+export async function getLobby(id: string): Promise<Lobby | null> {
+  const db = await load();
+  return db.lobbies[id] ?? null;
+}
 
 /**
- * Fetch (or open) a day.
- *
- * A new day inherits the previous day's unspent remainder, so a quiet Tuesday
- * that only raised half a ticket's worth of fees rolls that value forward
- * instead of losing it.
+ * The lobby a new player should join: still open, still has an empty seat, and
+ * hasn't already been sitting past its fill deadline. Oldest first, so players
+ * pile into the lobby closest to starting rather than each opening their own.
  */
-export async function getOrCreateDay(key: string): Promise<VaultDay> {
+export async function findJoinableLobby(nowMs: number): Promise<Lobby | null> {
   const db = await load();
-  if (db.days[key]) return db.days[key];
-
-  const w = windowForKey(key);
-
-  // Carry in from the most recent settled day before this one.
-  const prior = Object.values(db.days)
-    .filter((d) => d.key < key && d.settlement)
-    .sort((a, b) => b.key.localeCompare(a.key))[0];
-  const carryIn = prior?.settlement ? toUnits(prior.settlement.carryOutUnits) : 0n;
-
-  db.days[key] = {
-    key,
-    opensAt: w.opensAt,
-    closesAt: w.closesAt,
-    carryInUnits: carryIn.toString(),
-    poolUnits: carryIn.toString(),
-    entries: 0,
-    settlement: null,
-  };
-  await persist();
-  return db.days[key];
-}
-
-export async function getDay(key: string): Promise<VaultDay | null> {
-  const db = await load();
-  return db.days[key] ?? null;
-}
-
-export async function listDays(): Promise<VaultDay[]> {
-  const db = await load();
-  return Object.values(db.days).sort((a, b) => b.key.localeCompare(a.key));
-}
-
-/** Days that have closed but never been settled, oldest first. */
-export async function listUnsettledDays(before: string): Promise<VaultDay[]> {
-  const db = await load();
-  return Object.values(db.days)
-    .filter((d) => !d.settlement && d.key < before)
-    .sort((a, b) => a.key.localeCompare(b.key));
-}
-
-export async function addEntryFee(key: string, feeUnits: bigint): Promise<VaultDay> {
-  const db = await load();
-  const day = db.days[key] ?? (await getOrCreateDay(key));
-  day.poolUnits = (toUnits(day.poolUnits) + feeUnits).toString();
-  day.entries += 1;
-  await persist();
-  return day;
-}
-
-export async function markDaySettled(key: string, settlement: DaySettlement): Promise<VaultDay> {
-  const db = await load();
-  const day = db.days[key];
-  if (!day) throw new Error(`Unknown vault day ${key}`);
-  day.settlement = settlement;
-  await persist();
-  return day;
-}
-
-// ─── Daily ladder ───────────────────────────────────────────────────────────
-
-export async function addLadderPoints(
-  dayKey: string,
-  player: { id: string; name: string },
-  points: number,
-  retired: boolean,
-): Promise<LadderEntry> {
-  const db = await load();
-  const pid = normalizeAddress(player.id);
-  const board = (db.ladder[dayKey] ??= {});
-
-  const entry = (board[pid] ??= {
-    playerId: pid,
-    name: player.name,
-    points: 0,
-    races: 0,
-    retired: 0,
-    bestScore: 0,
-    updatedAt: now(),
-  });
-
-  entry.name = player.name;
-  entry.points += points;
-  entry.races += 1;
-  if (retired) entry.retired += 1;
-  entry.bestScore = Math.max(entry.bestScore, points);
-  entry.updatedAt = now();
-
-  await persist();
-  return entry;
-}
-
-/** One day's ladder, ranked. Ties break by address so the order is stable. */
-export async function getLadder(dayKey: string): Promise<LadderEntry[]> {
-  const db = await load();
-  return Object.values(db.ladder[dayKey] ?? {}).sort(
-    (a, b) => b.points - a.points || a.playerId.localeCompare(b.playerId),
+  return (
+    Object.values(db.lobbies)
+      .filter(
+        (l) =>
+          l.state === 'open' &&
+          l.seats.some((s) => s.kind === 'empty') &&
+          new Date(l.fillDeadline).getTime() > nowMs,
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null
   );
 }
 
-export async function getLadderEntry(dayKey: string, playerId: string): Promise<LadderEntry | null> {
+/** Lobbies that are due to be locked or settled, so a request can advance them. */
+export async function listPendingLobbies(): Promise<Lobby[]> {
   const db = await load();
-  return db.ladder[dayKey]?.[normalizeAddress(playerId)] ?? null;
+  return Object.values(db.lobbies)
+    .filter((l) => l.state !== 'settled')
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-// ─── Races ──────────────────────────────────────────────────────────────────
-
-export async function createRace(
-  r: Omit<RaceRecord, 'createdAt' | 'settledAt' | 'placement' | 'pointsAwarded' | 'retired'>,
-): Promise<RaceRecord> {
+export async function listLobbiesForPlayer(playerId: string, limit = 20): Promise<Lobby[]> {
   const db = await load();
-  const rec: RaceRecord = {
-    ...r,
-    playerId: normalizeAddress(r.playerId),
-    createdAt: now(),
-    settledAt: null,
-    placement: null,
-    pointsAwarded: null,
-    retired: null,
-  };
-  db.races[rec.id] = rec;
-  await persist();
-  return rec;
+  const id = normalizeAddress(playerId);
+  return Object.values(db.lobbies)
+    .filter((l) => l.seats.some((s) => s.id === id))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, limit);
 }
 
-export async function getRace(id: string): Promise<RaceRecord | null> {
+export async function listRecentSettledLobbies(limit = 12): Promise<Lobby[]> {
   const db = await load();
-  return db.races[id] ?? null;
-}
-
-export async function settleRace(
-  id: string,
-  patch: { placement: number; pointsAwarded: number; retired: boolean },
-): Promise<RaceRecord> {
-  const db = await load();
-  const race = db.races[id];
-  if (!race) throw new Error(`Unknown race ${id}`);
-  race.settledAt = now();
-  race.placement = patch.placement;
-  race.pointsAwarded = patch.pointsAwarded;
-  race.retired = patch.retired;
-  await persist();
-  return race;
+  return Object.values(db.lobbies)
+    .filter((l) => l.state === 'settled')
+    .sort((a, b) => (b.settlement?.settledAt ?? '').localeCompare(a.settlement?.settledAt ?? ''))
+    .slice(0, limit);
 }
 
 // ─── Orb rollover ───────────────────────────────────────────────────────────
@@ -497,5 +523,3 @@ export async function __resetForTests(): Promise<void> {
   setCached(structuredClone(EMPTY));
   await persist();
 }
-
-export { vaultDayKey };

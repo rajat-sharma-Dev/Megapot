@@ -344,6 +344,13 @@ body {
 /* ── Surfaces ───────────────────────────────────────────────────────────────*/
 
 .panel {
+  /*
+   * NOTE: this `position` has the same specificity as Tailwind's positioning
+   * utilities and is declared after them, so `class="panel fixed"` resolves to
+   * RELATIVE, not fixed. It cost an afternoon once — a portalled popover laid
+   * itself out in normal flow a thousand pixels down the page. Anything that
+   * needs to override this must set `position` inline.
+   */
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);

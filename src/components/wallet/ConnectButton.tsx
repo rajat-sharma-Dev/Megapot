@@ -28,7 +28,21 @@ function usePopoverPlacement(
   open: boolean,
   width: number,
 ) {
-  const [style, setStyle] = useState<React.CSSProperties>({ top: -9999, left: -9999 });
+  /**
+   * `position` is set inline, not by a utility class, and that is deliberate.
+   *
+   * `.panel` in globals.css declares `position: relative`, which has the same
+   * specificity as Tailwind's `.fixed` and is declared later — so it silently
+   * won, and the popover was laid out in normal flow at the end of <body> with
+   * `top`/`left` as relative offsets. That put it about 1100px down the page,
+   * i.e. invisible, which is exactly the "dropdown does nothing" symptom. An
+   * inline style beats every class, so this cannot be overridden again.
+   */
+  const [style, setStyle] = useState<React.CSSProperties>({
+    position: 'fixed',
+    top: -9999,
+    left: -9999,
+  });
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);
@@ -53,8 +67,8 @@ function usePopoverPlacement(
 
       setStyle(
         flip
-          ? { left, bottom: window.innerHeight - r.top + 8, width: w }
-          : { left, top: r.bottom + 8, width: w },
+          ? { position: 'fixed', left, bottom: window.innerHeight - r.top + 8, width: w }
+          : { position: 'fixed', left, top: r.bottom + 8, width: w },
       );
     };
 

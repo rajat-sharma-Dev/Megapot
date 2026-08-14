@@ -19,6 +19,7 @@ import { base, baseSepolia } from 'viem/chains';
 import { readFileSync } from 'fs';
 import { ADDRESSES, type MegapotNetwork } from '../src/lib/megapot/addresses';
 import { RANDOM_TICKET_BUYER_ABI, ERC20_ABI } from '../src/lib/megapot/abi';
+import { envStr } from '../src/lib/env';
 
 /** Read .env.local directly — this runs outside Next, which normally loads it. */
 function loadEnv(): Record<string, string> {
@@ -27,7 +28,12 @@ function loadEnv(): Record<string, string> {
       readFileSync('.env.local', 'utf8')
         .split('\n')
         .filter((l) => l.includes('=') && !l.trim().startsWith('#'))
-        .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()]),
+        // Unquote exactly as dotenv (and src/lib/env.ts) do, or this script
+        // checks a treasury that differs from the one the app actually uses.
+        .map((l) => [
+          l.slice(0, l.indexOf('=')).trim(),
+          envStr(l.slice(l.indexOf('=') + 1)) ?? '',
+        ]),
     );
   } catch {
     return {};
@@ -36,7 +42,8 @@ function loadEnv(): Record<string, string> {
 
 const env = { ...loadEnv(), ...process.env } as Record<string, string>;
 
-const NETWORK = (env.NEXT_PUBLIC_MEGAPOT_NETWORK as MegapotNetwork) ?? 'testnet';
+const NETWORK: MegapotNetwork =
+  env.NEXT_PUBLIC_MEGAPOT_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
 const CHAIN = NETWORK === 'mainnet' ? base : baseSepolia;
 const ADDR = ADDRESSES[NETWORK];
 const RPC =

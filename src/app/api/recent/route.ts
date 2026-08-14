@@ -16,7 +16,9 @@ export const dynamic = 'force-dynamic';
  * be a lie about the odds.
  */
 export async function GET() {
-  await advanceLobbies().catch(() => {});
+  // Fired, not awaited — settling a race replays five runs and can buy a
+  // ticket, which has no business sitting in front of a read-only board.
+  void advanceLobbies().catch(() => {});
 
   const lobbies = await listRecentSettledLobbies(12);
 

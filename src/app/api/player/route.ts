@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
-import {
-  getOrCreatePlayer, listTickets, listLedger, listLobbiesForPlayer, toUnits,
-} from '@/lib/db/store';
+import { getPlayerBundle, toUnits } from '@/lib/db/store';
 import { getCurrentDrawing } from '@/lib/megapot/drawing';
 import { entryFeeUnits, SEATS_PER_RACE } from '@/lib/vault/economy';
 import { advanceLobbies } from '@/lib/vault/lobby';
@@ -26,15 +24,11 @@ export async function GET(req: Request) {
 
   void advanceLobbies().catch(() => {});
 
-  const drawing = await getCurrentDrawing();
-  const feeUnits = entryFeeUnits(drawing.ticketPrice);
 
-  const player = await getOrCreatePlayer(address);
-  const [tickets, ledger, lobbies] = await Promise.all([
-    listTickets(player.id),
-    listLedger(player.id, 40),
-    listLobbiesForPlayer(player.id, 15),
-  ]);
+  // Independent of each other, so they overlap rather than queue.
+  const [drawing, bundle] = await Promise.all([getCurrentDrawing(), getPlayerBundle(address)]);
+  const feeUnits = entryFeeUnits(drawing.ticketPrice);
+  const { player, tickets, ledger, lobbies } = bundle;
 
   const credits = toUnits(player.creditsUnits);
 

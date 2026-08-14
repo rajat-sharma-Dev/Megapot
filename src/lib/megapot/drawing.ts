@@ -45,15 +45,16 @@ export type CurrentDrawing = DrawingState & { drawingId: bigint };
  * load, several times over, which is what made balances and the deposit panel
  * appear so long after the page did.
  *
- * A few seconds is safe. Drawing state changes once per drawing (daily on
- * mainnet), and the only fast-moving field is `prizePool`, which is a headline
- * number rather than something we transact against. Anything that *spends*
- * money re-reads inside its own transaction anyway.
+ * Thirty seconds is safe, and six was too short to help: it was briefer than the
+ * gap between page loads, so nearly every request still paid for a fresh read.
+ * Drawing state changes once per drawing (daily on mainnet) and the only
+ * fast-moving field is `prizePool`, a headline number we never transact
+ * against — a purchase re-reads the price inside its own call regardless.
  *
  * Deliberately short enough that `jackpotLock` is never badly stale — mistaking
  * a settling protocol for an open one wastes a purchase.
  */
-const CACHE_MS = Number(process.env.MEGAPOT_DRAWING_CACHE_MS ?? 6_000);
+const CACHE_MS = Number(process.env.MEGAPOT_DRAWING_CACHE_MS ?? 30_000);
 
 type CacheEntry = { at: number; value: CurrentDrawing };
 const g = globalThis as unknown as {

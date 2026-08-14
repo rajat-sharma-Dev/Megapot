@@ -642,5 +642,22 @@ export const recordTicket = (t: Omit<TicketRecord, 'createdAt'>) =>
   pgEnabled() ? pg.recordTicket(t) : file_recordTicket(t);
 export const listTickets = (p?: string) => (pgEnabled() ? pg.listTickets(p) : file_listTickets(p));
 
+/**
+ * Load a whole profile at once.
+ *
+ * Postgres does it in one round trip; the file store is already in memory, so
+ * it just reads four things. Callers get the same shape either way.
+ */
+export const getPlayerBundle = async (address: string, ledgerLimit = 40, lobbyLimit = 15) => {
+  if (pgEnabled()) return pg.getPlayerBundle(address, ledgerLimit, lobbyLimit);
+  const player = await file_getOrCreatePlayer(address);
+  const [tickets, ledger, lobbies] = await Promise.all([
+    file_listTickets(player.id),
+    file_listLedger(player.id, ledgerLimit),
+    file_listLobbiesForPlayer(player.id, lobbyLimit),
+  ]);
+  return { player, tickets, ledger, lobbies };
+};
+
 export const __resetForTests = () =>
   pgEnabled() ? pg.__resetForTests() : file___resetForTests();

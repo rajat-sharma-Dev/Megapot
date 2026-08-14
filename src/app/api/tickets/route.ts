@@ -27,20 +27,32 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: 'A valid address is required' }, { status: 400 });
   }
 
+  /**
+   * Our records and Megapot's, fetched together.
+   *
+   * The Data API round trip dominates this route — it was most of a three-second
+   * response — so it runs alongside the database read rather than after it, and
+   * the two Data API calls run alongside each other. A wallet with no tickets
+   * skips the remote calls entirely, because there are no numbers to look up.
+   */
   const records = await listTickets(address);
+  const wantsNumbers = records.some((t) => !t.simulated);
 
   let onchain: WalletTicket[] = [];
   let stats: unknown = null;
   let onchainError: string | null = null;
-  try {
-    const [tickets, walletStats] = await Promise.all([
-      getWalletTickets(address),
-      getWalletStats(address),
-    ]);
-    onchain = Array.isArray(tickets?.data) ? tickets.data : [];
-    stats = walletStats;
-  } catch (err) {
-    onchainError = (err as Error).message;
+
+  if (wantsNumbers) {
+    try {
+      const [tickets, walletStats] = await Promise.all([
+        getWalletTickets(address),
+        getWalletStats(address),
+      ]);
+      onchain = Array.isArray(tickets?.data) ? tickets.data : [];
+      stats = walletStats;
+    } catch (err) {
+      onchainError = (err as Error).message;
+    }
   }
 
   /** Numbers, keyed by the protocol's ticket id, so a record can find its own. */

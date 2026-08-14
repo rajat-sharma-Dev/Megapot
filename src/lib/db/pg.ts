@@ -544,6 +544,60 @@ export async function listTickets(playerId?: string): Promise<TicketRecord[]> {
   return rows.map(toTicket);
 }
 
+/**
+ * Everything the profile route needs, in ONE round trip.
+ *
+ * The route previously issued four separate queries — player, tickets, ledger,
+ * lobbies — and over an HTTP driver each one is a full request to Neon. Three
+ * of them ran in parallel, but the latency still stacked with the fourth and
+ * with connection setup, which is most of why the profile took seconds to
+ * appear. Postgres can assemble the whole thing server-side and send it once.
+ */
+export async function getPlayerBundle(
+  address: string,
+  ledgerLimit = 40,
+  lobbyLimit = 15,
+): Promise<{
+  player: Player;
+  tickets: TicketRecord[];
+  ledger: LedgerEntry[];
+  lobbies: Lobby[];
+}> {
+  await ready();
+  const id = normalizeAddress(address);
+  const fallback = `Racer ${id.slice(2, 6).toUpperCase()}`;
+
+  // Make sure the row exists before the read; cheap, and keeps the big query
+  // to a plain SELECT rather than an upsert with three lateral joins.
+  await getOrCreatePlayer(address);
+
+  const rows = (await db().query(
+    `
+    SELECT
+      (SELECT row_to_json(p) FROM players p WHERE p.id = $1) AS player,
+      COALESCE((SELECT json_agg(t ORDER BY t.created_at DESC)
+                  FROM tickets t WHERE t.player_id = $1), '[]'::json) AS tickets,
+      COALESCE((SELECT json_agg(l) FROM (
+                  SELECT * FROM ledger WHERE player_id = $1 ORDER BY id DESC LIMIT $2
+                ) l), '[]'::json) AS ledger,
+      COALESCE((SELECT json_agg(lo) FROM (
+                  SELECT * FROM lobbies
+                   WHERE seats @> jsonb_build_array(jsonb_build_object('id', $1::text))
+                   ORDER BY created_at DESC LIMIT $3
+                ) lo), '[]'::json) AS lobbies
+    `,
+    [id, ledgerLimit, lobbyLimit],
+  )) as Row[];
+
+  const r = rows[0] ?? {};
+  return {
+    player: toPlayer(r.player ?? { id, name: fallback }),
+    tickets: (r.tickets ?? []).map(toTicket),
+    ledger: (r.ledger ?? []).map(toLedger),
+    lobbies: (r.lobbies ?? []).map(toLobby),
+  };
+}
+
 // ─── Test support ───────────────────────────────────────────────────────────
 
 export async function __resetForTests(): Promise<void> {

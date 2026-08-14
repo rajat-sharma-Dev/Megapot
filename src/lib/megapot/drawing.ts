@@ -52,6 +52,50 @@ export async function getCurrentDrawing(): Promise<CurrentDrawing> {
   return { ...s, drawingId };
 }
 
+/**
+ * Has this drawing been drawn?
+ *
+ * `winningTicket` is zero until the Pyth entropy callback fires and the numbers
+ * are fixed, so a non-zero value is the definitive settled signal. `jackpotLock`
+ * is NOT the same question — it is true only during the settlement window
+ * itself, so a drawing that finished an hour ago has `jackpotLock === false`
+ * exactly like one that hasn't started.
+ */
+export function isDrawn(state: Pick<DrawingState, 'winningTicket'>): boolean {
+  return state.winningTicket !== 0n;
+}
+
+/**
+ * The most recently settled drawing.
+ *
+ * The active drawing is by definition unsettled, so the last settled one is
+ * always the id below it. Returns null before the very first drawing has closed.
+ */
+export async function lastSettledDrawingId(): Promise<bigint | null> {
+  const current = (await publicClient.readContract({
+    address: CONTRACTS.jackpot,
+    abi: JACKPOT_ABI,
+    functionName: 'currentDrawingId',
+  })) as bigint;
+  return current > 0n ? current - 1n : null;
+}
+
+/**
+ * Referral fees accrued to an address, in USDC base units.
+ *
+ * This is the integration's own revenue: Megapot pays a share of ticket price on
+ * every purchase that named this address as a referrer, and it sits on the
+ * contract until `claimReferralFees()` is called.
+ */
+export async function referralFeesOwed(address: `0x${string}`): Promise<bigint> {
+  return (await publicClient.readContract({
+    address: CONTRACTS.jackpot,
+    abi: JACKPOT_ABI,
+    functionName: 'referralFees',
+    args: [address],
+  })) as bigint;
+}
+
 /** Seconds until the current drawing closes. Negative once the cutoff has passed. */
 export function secondsUntilDraw(state: Pick<DrawingState, 'drawingTime'>): number {
   return Number(state.drawingTime) - Math.floor(Date.now() / 1000);

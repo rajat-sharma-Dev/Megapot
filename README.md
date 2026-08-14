@@ -76,6 +76,10 @@ npm test              # both
    steal at the checkpoints.
 4. **Take the pot.** Highest score takes every shard staked. Five shards is a whole Megapot ticket,
    minted straight to your wallet.
+5. **Claim, if it wins.** When the drawing settles, a winning ticket is redeemed with
+   `Jackpot.claimWinnings(ticketIds)` — and **you** sign that, not us. The ticket is an ERC-721 in
+   your wallet, so nobody else can redeem it. The vault shows what's claimable and hands your wallet
+   the transaction.
 
 Full rules — every point value, the Steal Zone logic, why the Orb only pays if you finish — are in
 **[`docs/GAME-RULES.md`](docs/GAME-RULES.md)**.
@@ -138,8 +142,9 @@ src/
 ├── lib/wallet/       wagmi config · connect hook
 ├── lib/audio/        synthesised sound engine
 ├── lib/db/           file-backed store (swap for Postgres via one module)
-├── app/api/          lobby/join · lobby/[id] · lobby/submit · deposit · withdraw · player · tickets · jackpot
-├── app/              landing · play · vault
+├── app/api/          lobby/{join,[id],submit} · deposit · withdraw · player · tickets · wins
+│                     jackpot · recent · admin/referral
+├── app/              attract screen · play · vault
 └── components/       canvas renderer · HUD · matchmaking · results · wallet panels
 ```
 
@@ -161,6 +166,13 @@ the view, never in the simulation, because the server replays races with no rend
 **Every sound is synthesised at runtime.** There is not one audio file in the repository — Web Audio
 gives us a boost roar that lasts exactly as long as the fuel does, ships nothing, and has no
 licensing to get wrong.
+
+**The front door is an attract screen, not a landing page.** Arcade cabinets ran an attract mode to
+announce what the machine was and make it feel alive from across the room, and the `.io` genre is
+built on removing friction — no menus to dig through, no lobby screen that takes longer than the
+match. Both point the same way, so `/` is a cabinet: the game already running behind the glass, one
+`PRESS START` bound to the keyboard, and the explanation demoted to a four-panel attract cycle that
+rotates on its own. Scrolling is optional and leads to a spec sheet rather than a pitch.
 
 **A race has no background drone, and that took two attempts to learn.** First a sawtooth engine
 note that tracked speed, which was a buzz within a minute. Then filtered noise — a wind rush with no
@@ -226,8 +238,11 @@ Stated plainly rather than buried:
   no assertion.
 - **No age or jurisdiction gate.** This awards real lottery tickets. A production deployment needs one
   before the first race. The jam build runs on Base Sepolia with valueless test USDC.
-- **`claimReferralFees()` has no code path.** The referral cut accrues on-chain but there is no admin
-  route to collect it yet.
+- **Batch purchases above ten tickets loop rather than batching.** `buyTickets` takes 1–10, so a
+  larger award becomes N transactions. Megapot's `BatchPurchaseFacilitator.createBatchOrder` exists
+  for exactly this, but it is keeper-executed and asynchronous, which would turn settlement from one
+  await into a polling state machine. A race pot mints one ticket in the overwhelming majority of
+  cases, so the loop is the right trade here and the wrong one for a bulk-buy product.
 - **WalletConnect is not wired up.** It needs a project id and an optional peer dependency; injected
   wallets and Coinbase Wallet cover the rest. See `src/lib/wallet/config.ts`.
 

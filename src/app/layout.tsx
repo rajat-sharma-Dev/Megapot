@@ -38,10 +38,15 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: '#04060c',
-  // The race is a full-bleed canvas you steer by dragging; letting the browser
-  // zoom on a double tap makes it unplayable on a phone.
-  maximumScale: 1,
-  userScalable: false,
+  // `width` and `initialScale` are stated explicitly because exporting a custom
+  // viewport replaces the framework default rather than extending it — omitting
+  // them drops `width=device-width` and every phone renders the app at 980px.
+  width: 'device-width',
+  initialScale: 1,
+  // Pinch-zoom is deliberately NOT disabled. It was, to stop a double tap zooming
+  // mid-race, but that locks zoom out of the entire app for everyone who needs it
+  // to read anything. The race canvas scopes its own touch handling instead
+  // (`.no-touch-scroll`), which solves the actual problem without the collateral.
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

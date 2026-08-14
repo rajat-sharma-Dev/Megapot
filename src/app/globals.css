@@ -32,8 +32,8 @@
   --panel-solid: #0c1226;
   --panel-hi: rgba(24, 34, 60, 0.78);
 
-  --border: rgba(148, 163, 184, 0.14);
-  --border-strong: rgba(148, 163, 184, 0.28);
+  --border: rgba(148, 163, 184, 0.2);
+  --border-strong: rgba(148, 163, 184, 0.38);
 
   --text: #eaf1ff;
   --text-dim: #97a6c0;
@@ -64,15 +64,38 @@
 
 * { box-sizing: border-box; }
 
-html, body { max-width: 100vw; overflow-x: hidden; }
-
+/*
+ * Scrolling.
+ *
+ * There is exactly one scroll container in this app — the document — and these
+ * four lines are what keep it that way. Getting here took removing three things
+ * that all looked harmless:
+ *
+ *  · `overflow-x: hidden` on BOTH html and body. Per spec a non-`visible` value
+ *    on one axis forces the other axis from `visible` to `auto`, so that rule
+ *    silently makes the root AND the body scroll containers, nested inside each
+ *    other. `overflow-x: clip` does the same clipping without ever creating a
+ *    scroll container, which is precisely what it was added to the language for.
+ *    It is set on body alone; the root is left completely untouched.
+ *
+ *  · `max-width: 100vw`. `100vw` includes the scrollbar gutter, so on any
+ *    desktop browser with a classic scrollbar this is a few pixels WIDER than
+ *    the content box — a rule meant to prevent horizontal overflow that quietly
+ *    causes it. `100%` is the width you actually meant.
+ *
+ *  · `overscroll-behavior-y: none` on body. It was there to stop rubber-banding,
+ *    but applied at document level it also kills pull-to-refresh and interferes
+ *    with touch scrolling. Overscroll chaining only actually matters over the
+ *    race canvas, so it now lives there — see `.no-touch-scroll`.
+ */
 body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   min-height: 100dvh;
-  overscroll-behavior-y: none;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 /* ── Ambient background ─────────────────────────────────────────────────────
@@ -127,13 +150,204 @@ body {
   );
 }
 
+/* ── Cabinet ────────────────────────────────────────────────────────────────
+ *
+ * The primitives that make this read as a machine rather than a marketing page.
+ *
+ * The tell of a generated website is uniform 16px-radius cards in a three-up
+ * grid, evenly spaced, every corner identical. Games almost never look like
+ * that. Their panels are cut, bracketed, bolted and asymmetric, because the
+ * chrome is pretending to be a physical housing. These classes are that
+ * housing.
+ */
+
+/* Corner-cut panel. One clip-path replaces the rounded card entirely. */
+.cut {
+  clip-path: polygon(
+    0 13px, 13px 0,
+    100% 0, 100% calc(100% - 13px),
+    calc(100% - 13px) 100%, 0 100%
+  );
+}
+
+.cut-sm {
+  clip-path: polygon(
+    0 7px, 7px 0,
+    100% 0, 100% calc(100% - 7px),
+    calc(100% - 7px) 100%, 0 100%
+  );
+}
+
+/* A slanted tab — used for labels that should look stamped on, not laid out. */
+.skew-tab {
+  clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+}
+
+/*
+ * HUD corner brackets.
+ *
+ * Four L-shaped marks at the corners of a region. Every game overlay in
+ * existence uses these because they frame without enclosing — they say "this is
+ * an instrument reading" where a border would say "this is a card".
+ */
+.brackets { position: relative; }
+.brackets::before,
+.brackets::after {
+  content: '';
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-color: var(--accent);
+  pointer-events: none;
+  opacity: 0.75;
+}
+.brackets::before {
+  top: 0; left: 0;
+  border-top: 2px solid; border-left: 2px solid;
+}
+.brackets::after {
+  bottom: 0; right: 0;
+  border-bottom: 2px solid; border-right: 2px solid;
+}
+
+/*
+ * Film grain.
+ *
+ * An SVG turbulence filter as a data URI — no asset, no request. This is the
+ * single cheapest thing that stops a flat dark gradient looking synthetic; every
+ * surface in a game render has noise in it and the eye notices when there is
+ * none, even if it can't say why.
+ */
+.grain::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.32'/%3E%3C/svg%3E");
+}
+
+/*
+ * Chromatic split.
+ *
+ * A red/cyan offset behind the title, like a misconverged CRT. Cheap, and it
+ * carries an enormous amount of "this is a game" signal — it is the visual
+ * shorthand for a screen rather than a document.
+ */
+.chroma {
+  text-shadow:
+    0.055em 0 rgba(255, 40, 90, 0.55),
+    -0.055em 0 rgba(0, 220, 255, 0.5);
+}
+
+/* The arcade blink. Hard on/off, no easing — a fade would read as a web UI. */
+@keyframes blink-hard {
+  0%, 48% { opacity: 1; }
+  49%, 100% { opacity: 0.12; }
+}
+.blink { animation: blink-hard 1.15s steps(1, end) infinite; }
+
+/*
+ * Marquee ticker.
+ *
+ * The content is duplicated in the markup and the track translates exactly
+ * -50%, which is what makes the loop seamless — animating to -100% of a single
+ * copy leaves a visible gap on every cycle.
+ */
+.marquee { overflow: hidden; }
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-run 38s linear infinite;
+}
+.marquee:hover .marquee-track { animation-play-state: paused; }
+@keyframes marquee-run {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* Hard-edged pressable slab. The CTA is a button on a cabinet, not a web link. */
+.slab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 90ms ease, box-shadow 90ms ease, filter 140ms ease;
+  clip-path: polygon(
+    0 11px, 11px 0,
+    100% 0, 100% calc(100% - 11px),
+    calc(100% - 11px) 100%, 0 100%
+  );
+}
+.slab-accent {
+  background: var(--accent);
+  color: #032018;
+  /* A hard offset shadow, not a blur — it reads as a physical key with travel. */
+  box-shadow: 5px 5px 0 0 var(--accent-deep), 0 0 46px -6px rgba(46, 230, 160, 0.75);
+}
+.slab-accent:hover { filter: brightness(1.07); transform: translate(-1px, -1px); box-shadow: 7px 7px 0 0 var(--accent-deep), 0 0 60px -6px rgba(46, 230, 160, 0.9); }
+.slab-accent:active { transform: translate(4px, 4px); box-shadow: 1px 1px 0 0 var(--accent-deep); }
+
+.slab-ghost {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: var(--text);
+  box-shadow: 4px 4px 0 0 rgba(0, 0, 0, 0.55);
+}
+.slab-ghost:hover { background: rgba(255, 255, 255, 0.1); transform: translate(-1px, -1px); }
+.slab-ghost:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 0 rgba(0, 0, 0, 0.55); }
+
+.slab:disabled { opacity: 0.4; cursor: not-allowed; filter: saturate(0.4); }
+.slab:disabled:hover { transform: none; }
+
+/* A keycap, for showing controls inline. */
+.key {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.75rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom-width: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Attract-cycle panels cross-fade in place, like a cabinet changing screens. */
+@keyframes attract-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.attract-panel { animation: attract-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* A thin scan sweep that falls down the title once in a while. */
+@keyframes sweep-down {
+  0% { transform: translateY(-120%); opacity: 0; }
+  8% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { transform: translateY(520%); opacity: 0; }
+}
+.sweep { animation: sweep-down 6.5s ease-in-out infinite; }
+
 /* ── Surfaces ───────────────────────────────────────────────────────────────*/
 
 .panel {
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 3px;
   backdrop-filter: blur(16px);
   box-shadow: var(--shadow-lift);
 }
@@ -145,7 +359,7 @@ body {
   position: absolute;
   inset: 0 0 auto 0;
   height: 1px;
-  border-radius: 20px 20px 0 0;
+  border-radius: 3px 3px 0 0;
   background: linear-gradient(
     90deg, transparent, rgba(255, 255, 255, 0.28) 22%, rgba(46, 230, 160, 0.5) 50%,
     rgba(255, 255, 255, 0.28) 78%, transparent
@@ -169,7 +383,7 @@ body {
 }
 
 .inset {
-  border-radius: 14px;
+  border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.055);
   background: rgba(0, 0, 0, 0.28);
 }
@@ -216,7 +430,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  border-radius: 13px;
+  border-radius: 3px;
   font-family: var(--font-display), system-ui, sans-serif;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -282,7 +496,7 @@ body {
   align-items: center;
   gap: 0.375rem;
   padding: 0.25rem 0.65rem;
-  border-radius: 999px;
+  border-radius: 2px;
   font-family: var(--font-display), system-ui, sans-serif;
   font-size: 0.68rem;
   font-weight: 600;
@@ -309,7 +523,7 @@ body {
 .shard {
   flex: 1;
   height: 12px;
-  border-radius: 4px;
+  border-radius: 1px;
   border: 1px solid rgba(255, 197, 61, 0.26);
   background: rgba(255, 197, 61, 0.07);
   transition: background 320ms ease, box-shadow 320ms ease, transform 320ms cubic-bezier(0.16,1,0.3,1);
@@ -335,7 +549,7 @@ body {
   align-items: center;
   gap: 0.75rem;
   padding: 0.7rem 0.9rem;
-  border-radius: 14px;
+  border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);
   transition: border-color 240ms ease, background 240ms ease, transform 240ms cubic-bezier(0.16,1,0.3,1);
@@ -361,7 +575,7 @@ body {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 14px;
+  border-radius: 3px;
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.10), transparent);
   background-size: 220% 100%;
@@ -376,7 +590,7 @@ body {
 /* ── In-race HUD ────────────────────────────────────────────────────────────*/
 
 .hud-card {
-  border-radius: 13px;
+  border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   background: rgba(2, 4, 10, 0.7);
   padding: 0.55rem 0.9rem;
@@ -392,7 +606,7 @@ body {
 .fuel-track {
   position: relative;
   height: 15px;
-  border-radius: 999px;
+  border-radius: 2px;
   overflow: hidden;
   background: rgba(52, 220, 255, 0.09);
   border: 1px solid rgba(52, 220, 255, 0.24);
@@ -400,7 +614,7 @@ body {
 
 .fuel-fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: 2px;
   background: linear-gradient(90deg, var(--cyan-deep), var(--cyan) 62%, #a5f3ff);
   box-shadow: 0 0 18px rgba(52, 220, 255, 0.6);
   transition: width 90ms linear;
@@ -437,7 +651,7 @@ body {
 /* ── Toasts ─────────────────────────────────────────────────────────────────*/
 
 .toast {
-  border-radius: 999px;
+  border-radius: 2px;
   border: 1px solid;
   padding: 0.35rem 1rem;
   font-family: var(--font-display), system-ui, sans-serif;
@@ -561,5 +775,17 @@ body {
 ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.2); border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.34); }
 
-/* The race canvas must never be scrolled by a swipe meant to steer. */
-.no-touch-scroll { touch-action: none; -webkit-user-select: none; user-select: none; }
+/*
+ * The race canvas must never be scrolled by a swipe meant to steer.
+ *
+ * `touch-action: none` stops the gesture becoming a scroll, and
+ * `overscroll-behavior: contain` stops any of it chaining out to the document
+ * behind. Scoped to this element on purpose — the same pair applied to `body`
+ * breaks scrolling everywhere else, which is the bug this replaced.
+ */
+.no-touch-scroll {
+  touch-action: none;
+  overscroll-behavior: contain;
+  -webkit-user-select: none;
+  user-select: none;
+}

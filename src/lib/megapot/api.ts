@@ -46,6 +46,31 @@ export type WalletTicket = {
   [k: string]: unknown;
 };
 
+/**
+ * A winning ticket, as the Data API reports it.
+ *
+ * `user_ticket_id` is the value `Jackpot.claimWinnings(uint256[])` expects, and
+ * `claimed` is what stops us offering a claim for money already taken. Shape
+ * verified against the live OpenAPI schema rather than assumed.
+ */
+export type Win = {
+  id: string;
+  wallet: string;
+  buyer: string;
+  round_id: string;
+  user_ticket_id: string;
+  normals: number[];
+  bonusball: number;
+  matched_normals: number;
+  bonusball_match: boolean;
+  amount: Amount;
+  claimed: boolean;
+  claimed_tx_hash: string | null;
+  tx_hash: string;
+  block_number: number;
+  created_at: string;
+};
+
 export type Paginated<T> = {
   data: T[];
   has_more: boolean;
@@ -83,10 +108,16 @@ export const getLatestSettledRound = () => get<Round>('/rounds/latest-settled', 
 export const getWalletTickets = (address: string, limit = 50) =>
   get<Paginated<WalletTicket>>(`/wallets/${address}/tickets?limit=${limit}`, 15);
 
+/**
+ * A wallet's winning tickets. Pass `claimed: false` for the ones still owed.
+ *
+ * Short revalidate on purpose: this drives a "claim your winnings" button, and
+ * a stale cache there means offering someone a claim they already made.
+ */
 export const getWalletWins = (address: string, claimed?: boolean) =>
-  get<Paginated<Record<string, unknown>>>(
+  get<Paginated<Win>>(
     `/wallets/${address}/wins${claimed === undefined ? '' : `?claimed=${claimed}`}`,
-    15,
+    10,
   );
 
 export const getWalletStats = (address: string) =>

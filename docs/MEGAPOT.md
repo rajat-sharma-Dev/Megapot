@@ -173,6 +173,50 @@ like an unfunded treasury.
 
 ---
 
+## 5b · Claiming — the half that gets forgotten
+
+Buying a ticket is not the end of the lifecycle. When a drawing settles, a
+winning ticket has to be **redeemed**:
+
+```solidity
+Jackpot.claimWinnings(uint256[] ticketIds)   // burns the tickets, transfers USDC
+```
+
+**The player signs this, not your backend, and that is the correct shape rather
+than a limitation.** The ticket is an ERC-721 in their wallet; a server that
+could claim on their behalf would be a server that could redirect their
+winnings. Rally Vault has no code that could do it — `src/app/api/wins/route.ts`
+only *reads*, and the transaction is signed in
+`src/components/wallet/ClaimWinnings.tsx` by the player's own wallet.
+
+Finding what is claimable is a Data API job, not an RPC one. `GET
+/v1/wallets/{address}/wins` returns `Win` objects carrying exactly what you
+need:
+
+| Field | Use |
+|---|---|
+| `user_ticket_id` | the value `claimWinnings` takes |
+| `claimed` | so you never offer a claim for money already taken |
+| `claimed_tx_hash` | link the receipt |
+| `amount` | `{ amount, decimals }` — parse as an integer, never a float |
+| `matched_normals`, `bonusball_match` | which prize tier it landed in |
+
+### Knowing whether a drawing has been drawn
+
+`jackpotLock` answers a *different question* and it is an easy mix-up:
+
+```ts
+const drawn = state.winningTicket !== 0n;   // settled, numbers fixed
+const settling = state.jackpotLock;         // mid-settlement RIGHT NOW
+```
+
+`jackpotLock` is true only during the settlement window itself, so a drawing that
+finished an hour ago has `jackpotLock === false` exactly like one that hasn't
+started. Use `winningTicket` for "is it settled". The most recently settled
+drawing is always `currentDrawingId() - 1`, because the active one is by
+definition unsettled. Both are implemented in `src/lib/megapot/drawing.ts` as
+`isDrawn()` and `lastSettledDrawingId()`.
+
 ## 6 · How winning works
 
 At settlement the protocol fixes a winning combination and the payout calculator resolves prizes by
@@ -211,8 +255,19 @@ Referral revenue is how an integration like this can be free for the player and 
 Rally Vault passes its own treasury as the referrer on every purchase, so it earns the referral cut
 on tickets its players win.
 
-> **Known gap, stated plainly:** the referral cut accrues on-chain but there is no admin route to
-> call `claimReferralFees()` yet. The money accumulates; nothing collects it.
+**Collecting it needs a code path, and that is easy to leave out.** Fees accrue on the Jackpot
+contract from the first sale and sit there until somebody calls `claimReferralFees()`. Wiring the
+referrer without ever wiring the sweep makes the whole thing decorative. Here:
+
+```
+GET  /api/admin/referral   what has accrued, plus the live fee rates. Read-only.
+POST /api/admin/referral   sweeps it, gated on RALLY_ADMIN_SECRET.
+```
+
+One trap worth naming: **`claimReferralFees()` pays `msg.sender`**. If you name a referrer address
+that is different from the wallet holding your signing key, that other wallet has to claim its own
+fees — a sweep signed by the treasury would credit the treasury, not the referrer. The route detects
+the mismatch and refuses rather than sending a transaction that pays the wrong address.
 
 ---
 

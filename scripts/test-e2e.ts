@@ -727,7 +727,7 @@ async function main() {
   // ── Pages render ─────────────────────────────────────────────────────────
   group('Pages');
   for (const [route, marker] of [
-    ['/', 'ONE REAL TICKET'],
+    ['/', 'Press Start'],
     ['/play', 'Rally'],
     ['/vault', 'Rally'],
   ] as const) {

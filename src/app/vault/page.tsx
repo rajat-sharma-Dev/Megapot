@@ -8,6 +8,7 @@ import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { DepositPanel } from '@/components/wallet/DepositPanel';
 import { WithdrawPanel } from '@/components/wallet/WithdrawPanel';
 import { VaultCard } from '@/components/ShardMeter';
+import { ClaimWinnings } from '@/components/wallet/ClaimWinnings';
 import { formatUsdc } from '@/lib/format';
 import { shortAddress } from '@/lib/wallet/useWallet';
 
@@ -132,6 +133,9 @@ export default function VaultPage() {
 
           {/* ── Tickets, races, ledger ───────────────────────────────── */}
           <div className="space-y-5">
+            {/* Renders nothing until this wallet has actually won something. */}
+            <ClaimWinnings onClaimed={refresh} />
+
             <div className="panel panel-lit panel-gold rise p-6">
               <div className="mb-4 flex items-center justify-between">
                 <div className="chip chip-gold">Megapot tickets</div>

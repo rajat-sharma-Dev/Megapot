@@ -288,6 +288,51 @@ export function useLobby(
   return { lobby, error, reload: load, setLobby };
 }
 
+// ─── High scores ────────────────────────────────────────────────────────────
+
+export type RecentWinner = {
+  lobbyId: string;
+  settledAt: string;
+  name: string;
+  isHouse: boolean;
+  points: number;
+  wonFromBehind: boolean;
+  placement: number;
+  potUnits: string;
+  stakedSeats: number;
+  ticketsMinted: number;
+};
+
+export type RecentFeed = {
+  ok: boolean;
+  winners: RecentWinner[];
+  totals: { races: number; humanWins: number; ticketsMinted: number; potUnits: string };
+};
+
+/** The attract screen's high score table. */
+export function useRecentWinners(pollMs = 30_000) {
+  const [data, setData] = useState<RecentFeed | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/recent');
+      const json = await res.json();
+      if (json.ok) setData(json);
+    } catch {
+      // The board is decoration until somebody has raced — never worth an error.
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    if (!pollMs) return;
+    const id = setInterval(load, pollMs);
+    return () => clearInterval(id);
+  }, [load, pollMs]);
+
+  return { recent: data, reload: load };
+}
+
 /** A 1Hz clock shared by every countdown on a page, so eight of them cost one timer. */
 export function useNow(intervalMs = 1000) {
   const [now, setNow] = useState(() => Date.now());

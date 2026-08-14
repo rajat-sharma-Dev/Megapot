@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { Countdown } from '../DrawCountdown';
-import { PotMeter } from '../ShardMeter';
+import { PotMeter } from '../PotMeter';
 import { useSound } from '@/lib/audio/SoundProvider';
 import { formatUsdc } from '@/lib/format';
 import type { LobbyView } from '@/lib/hooks';

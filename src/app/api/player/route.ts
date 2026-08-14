@@ -3,7 +3,7 @@ import {
   getOrCreatePlayer, listTickets, listLedger, listLobbiesForPlayer, toUnits,
 } from '@/lib/db/store';
 import { getCurrentDrawing } from '@/lib/megapot/drawing';
-import { entryFeeUnits, shardsOf, ticketProgress, SHARDS_PER_TICKET } from '@/lib/vault/economy';
+import { entryFeeUnits, SEATS_PER_RACE } from '@/lib/vault/economy';
 import { advanceLobbies } from '@/lib/vault/lobby';
 import { txUrl } from '@/lib/megapot/addresses';
 
@@ -13,9 +13,8 @@ export const dynamic = 'force-dynamic';
  * A player's whole state: what they can spend, what they've won and haven't
  * cashed into a ticket yet, the tickets they hold, and their recent races.
  *
- * The shard count is derived here rather than stored, because the ticket price
- * is live protocol state — a vault worth four shards this morning is worth four
- * shards this evening only if the price didn't move.
+ * The entry fee is derived here rather than stored, because ticket price is live
+ * protocol state and the fee is a fraction of it.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -25,7 +24,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: 'A valid address is required' }, { status: 400 });
   }
 
-  await advanceLobbies().catch(() => {});
+  void advanceLobbies().catch(() => {});
 
   const drawing = await getCurrentDrawing();
   const feeUnits = entryFeeUnits(drawing.ticketPrice);
@@ -38,7 +37,6 @@ export async function GET(req: Request) {
   ]);
 
   const credits = toUnits(player.creditsUnits);
-  const vault = toUnits(player.vaultUnits);
 
   const history = lobbies
     .filter((l) => l.state === 'settled' && l.settlement)
@@ -82,11 +80,8 @@ export async function GET(req: Request) {
       lifetimeWageredUnits: player.lifetimeWageredUnits,
       lifetimeWonUnits: player.lifetimeWonUnits,
     },
-    vault: {
-      units: vault.toString(),
-      shards: shardsOf(vault, feeUnits),
-      shardsPerTicket: Number(SHARDS_PER_TICKET),
-      progress: ticketProgress(vault, drawing.ticketPrice),
+    economy: {
+      seatsPerRace: SEATS_PER_RACE,
       ticketPriceUnits: drawing.ticketPrice.toString(),
     },
     tickets: tickets.map((t) => ({

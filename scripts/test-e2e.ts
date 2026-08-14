@@ -19,7 +19,7 @@ import path from 'path';
 import { driveRace, localField } from './lib/drive';
 import { simulateLobby } from '../src/lib/game/replay';
 import { scoreRace } from '../src/lib/points/scoring';
-import { SHARDS_PER_TICKET, SEATS_PER_RACE } from '../src/lib/vault/economy';
+import { SEATS_PER_RACE } from '../src/lib/vault/economy';
 
 const PORT = 3210;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -253,8 +253,8 @@ async function main() {
       check(json.jackpotLock === false, 'protocol is not mid-settlement');
 
       check(
-        entryFeeUnits * SHARDS_PER_TICKET === ticketPriceUnits,
-        `entry is exactly a fifth of the live ticket price (${entryFeeUnits} × 5 = ${ticketPriceUnits})`,
+        entryFeeUnits * BigInt(SEATS_PER_RACE) === ticketPriceUnits,
+        `entry is exactly a fifth of the live ticket price (${entryFeeUnits} × ${SEATS_PER_RACE} = ${ticketPriceUnits})`,
       );
       check(
         BigInt(json.economy.fullPotUnits) === ticketPriceUnits,

@@ -32,7 +32,7 @@ export function Ticker({
     `${liveGames().length} GAME LIVE · MORE IN DEVELOPMENT`,
     recent?.totals.ticketsMinted
       ? `${recent.totals.ticketsMinted} REAL TICKETS WON HERE`
-      : 'FIVE SHARDS = ONE REAL TICKET',
+      : 'A FULL TABLE IS ONE REAL TICKET',
     jackpot && `${Number(jackpot.ticketsBought).toLocaleString()} TICKETS IN THIS ROUND`,
     'HIGHEST SCORE TAKES THE POT',
     jackpot?.network === 'mainnet' ? 'LIVE ON BASE' : 'LIVE ON BASE SEPOLIA',

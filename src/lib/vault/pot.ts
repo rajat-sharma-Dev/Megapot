@@ -41,7 +41,7 @@ export type PotSeat = {
 export type PotResult = {
   /** Every staked seat's entry fee, in USDC base units. */
   potUnits: bigint;
-  /** How many entry fees are in the pot — the shard count the winner takes. */
+  /** How many entry fees are in the pot. A full table is one ticket's worth. */
   stakedSeats: number;
   winner: PotSeat | null;
   /** Seats ordered exactly as the results screen shows them. */

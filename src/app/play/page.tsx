@@ -10,7 +10,7 @@ import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { RaceView } from '@/components/race/RaceView';
 import { Matchmaking } from '@/components/race/Matchmaking';
 import { Results } from '@/components/race/Results';
-import { ShardMeter, PotMeter } from '@/components/ShardMeter';
+import { PotMeter } from '@/components/PotMeter';
 import { DemoRace } from '@/components/DemoRace';
 import { formatUsdc } from '@/lib/format';
 import type { InputLog } from '@/lib/game/replay';
@@ -190,8 +190,6 @@ export default function PlayPage() {
             fullPotUnits={jackpot?.economy.fullPotUnits ?? '0'}
             balanceUnits={profile?.balance.creditsUnits ?? '0'}
             entriesLeft={profile?.balance.entriesAffordable ?? 0}
-            shards={profile?.vault.shards ?? 0}
-            shardsPerTicket={profile?.vault.shardsPerTicket ?? 5}
             name={wallet.name}
             setName={wallet.setName}
           />
@@ -232,10 +230,19 @@ function ConnectGate() {
   return (
     <>
       <Nav />
-      <main className="relative mx-auto flex min-h-[78vh] max-w-2xl flex-col items-center justify-center px-5 text-center">
-        <DemoRace className="opacity-[0.2]" />
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_70%_60%_at_50%_50%,rgba(4,6,12,0.95),rgba(4,6,12,0.75))]" />
+      {/*
+        Full-bleed, not boxed.
 
+        The demo race used to sit inside this `max-w-2xl` column, which drew a
+        hard-edged dark rectangle down the middle of the page instead of an
+        ambient background — a visible box with nothing in it. It now spans the
+        viewport behind the content, the way it does on the title screen.
+      */}
+      <div className="relative min-h-[78vh] overflow-hidden">
+        <DemoRace className="opacity-[0.35]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_65%_65%_at_50%_50%,rgba(4,6,12,0.94),rgba(4,6,12,0.8))]" />
+
+        <main className="relative mx-auto flex min-h-[78vh] max-w-2xl flex-col items-center justify-center px-5 text-center">
         <div className="relative rise">
           <div className="chip chip-live mx-auto mb-5">Step one</div>
           <h1 className="display text-3xl sm:text-5xl">Connect your wallet</h1>
@@ -246,11 +253,12 @@ function ConnectGate() {
           <div className="mt-8 flex justify-center">
             <ConnectButton />
           </div>
-          <Link href="/" className="mt-6 inline-block text-sm text-slate-500 hover:text-slate-300">
-            ← How the game works
+          <Link href="/games" className="mt-6 inline-block text-sm text-slate-500 hover:text-slate-300">
+            ← Back to the arcade
           </Link>
         </div>
-      </main>
+        </main>
+      </div>
     </>
   );
 }
@@ -328,7 +336,7 @@ function Verifying() {
       <div>
         <p className="display font-semibold text-slate-200">Verifying your run…</p>
         <p className="mt-1 text-sm text-slate-500">
-          Every seat is replayed server-side before a single shard moves.
+          Every seat is replayed server-side before the pot moves.
         </p>
       </div>
     </div>
@@ -344,7 +352,7 @@ function Verifying() {
  */
 function ReadyRoom({
   canAfford, joining, onJoin, entryFeeUnits, fullPotUnits, balanceUnits, entriesLeft,
-  shards, shardsPerTicket, name, setName,
+  name, setName,
 }: {
   canAfford: boolean;
   joining: boolean;
@@ -353,8 +361,6 @@ function ReadyRoom({
   fullPotUnits: string;
   balanceUnits: string;
   entriesLeft: number;
-  shards: number;
-  shardsPerTicket: number;
   name: string;
   setName: (n: string) => void;
 }) {
@@ -370,7 +376,7 @@ function ReadyRoom({
         </div>
         <h1 className="display text-2xl leading-tight sm:text-4xl">Take a seat</h1>
         <p className="mt-3 max-w-md leading-relaxed text-slate-400">
-          One stake, five seats, seventy seconds. Highest score takes every shard on the table —
+          One stake, five seats, seventy seconds. Highest score takes the whole pot —
           and it is score, not finishing order, that decides it.
         </p>
 
@@ -428,18 +434,13 @@ function ReadyRoom({
 
       <div className="space-y-5">
         <div className="panel panel-lit panel-gold rise p-4 sm:p-6" style={{ animationDelay: '80ms' }}>
-          <div className="flex items-baseline justify-between">
-            <div className="eyebrow">Shard vault</div>
-            <span className="num text-sm font-bold text-[var(--gold)]">
-              {shards % shardsPerTicket}/{shardsPerTicket}
-            </span>
+          <div className="eyebrow">The prize</div>
+          <div className="num mt-2 text-3xl font-bold text-[var(--gold)] glow-gold">
+            1 ticket
           </div>
-          <div className="mt-3">
-            <ShardMeter shards={shards} perTicket={shardsPerTicket} size="lg" />
-          </div>
-          <p className="mt-3 text-xs leading-relaxed text-slate-500">
-            {shardsPerTicket - (shards % shardsPerTicket)} more and a real Megapot ticket mints to
-            your wallet.
+          <p className="mt-2 text-xs leading-relaxed text-slate-500">
+            Five seats stake a fifth each, so a full table is exactly one Megapot ticket. Win the
+            pot and it is bought and minted straight to your wallet.
           </p>
 
           <div className="mt-5 border-t border-white/[0.07] pt-5">
@@ -450,9 +451,6 @@ function ReadyRoom({
               seatsTotal={5}
               compact
             />
-            <p className="mt-2 text-xs text-slate-500">
-              What a full five-seat lobby is worth — exactly one ticket.
-            </p>
           </div>
         </div>
 

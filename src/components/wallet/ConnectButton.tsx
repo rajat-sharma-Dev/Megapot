@@ -13,11 +13,66 @@ import { shortAddress } from '@/lib/wallet/useWallet';
  * screen rather than an error toast, because every single action in this app
  * fails from it and "switch network" is the only useful thing to say.
  */
+/**
+ * Position a popover under its trigger, clamped to the viewport.
+ *
+ * Returns `fixed` coordinates rather than relying on `absolute` inside the
+ * trigger, because the trigger appears both in a header and in the middle of a
+ * page, and an offset that is right in one place is wrong in the other. Flips
+ * above the trigger when there isn't room below, and never lets either edge
+ * leave the window.
+ */
+function usePopoverPlacement(
+  anchor: React.RefObject<HTMLElement | null>,
+  open: boolean,
+  width: number,
+) {
+  const [style, setStyle] = useState<React.CSSProperties>({ top: -9999, left: -9999 });
+
+  useEffect(() => {
+    if (!open) return;
+
+    const place = () => {
+      const el = anchor.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const margin = 12;
+      const w = Math.min(width, window.innerWidth - margin * 2);
+
+      // Prefer below; flip above only when below genuinely doesn't fit.
+      const below = window.innerHeight - r.bottom;
+      const flip = below < 260 && r.top > below;
+
+      // Right-align to the trigger, then clamp both edges into the window.
+      let left = r.right - w;
+      left = Math.max(margin, Math.min(left, window.innerWidth - w - margin));
+
+      setStyle(
+        flip
+          ? { left, bottom: window.innerHeight - r.top + 8, width: w }
+          : { left, top: r.bottom + 8, width: w },
+      );
+    };
+
+    place();
+    // Re-measure on anything that can move the trigger under the panel.
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [anchor, open, width]);
+
+  return style;
+}
+
 export function ConnectButton({ compact }: { compact?: boolean }) {
   const w = useWallet();
   const { play } = useSound();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const placement = usePopoverPlacement(ref, open, 288);
 
   useEffect(() => {
     if (!open) return;
@@ -93,7 +148,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
         </button>
 
         {open && (
-          <div className="panel absolute right-0 top-full z-50 mt-2 w-64 p-3 pop">
+          <div style={placement} className="panel fixed z-50 w-64 max-w-[calc(100vw-1.5rem)] p-3 pop">
             <div className="stat-label px-1">Connected with {w.connectorName}</div>
             <div className="num mt-1 break-all px-1 text-[11px] text-slate-400">{w.address}</div>
 
@@ -136,8 +191,23 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
         Connect wallet
       </button>
 
+      {/*
+        Anchored to the button, and clamped to the viewport.
+
+        The previous version was `absolute right-0 top-full`, which is only
+        correct when the button sits in a header. Rendered mid-page — as it is on
+        the connect screen — `right-0` pushed the panel off the edge and nothing
+        stopped it running past the bottom of the window, so the wallet list was
+        either half off-screen or separated from the button by the rest of the
+        page. `usePopoverPlacement` measures the button and pins the panel just
+        below it (or just above, when there isn't room), horizontally clamped so
+        it can never leave the screen.
+      */}
       {open && (
-        <div className="panel panel-lit absolute right-0 top-full z-50 mt-2 w-72 p-3 pop">
+        <div
+          style={placement}
+          className="panel panel-lit fixed z-50 w-72 max-w-[calc(100vw-1.5rem)] p-3 pop"
+        >
           <div className="eyebrow px-1 pb-2">Choose a wallet</div>
 
           <div className="grid gap-2">

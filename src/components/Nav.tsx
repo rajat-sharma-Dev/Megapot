@@ -16,7 +16,7 @@ const LINKS = [
 /**
  * The top bar.
  *
- * Doubles as the player's HUD outside a race: balance and shard progress are
+ * Doubles as the player's HUD outside a race: balance and tickets won are
  * always visible, because both are one click from being spent and a player
  * should never have to navigate to find out whether they can afford a race.
  */

@@ -29,7 +29,6 @@ export type Jackpot = {
 
   economy: {
     seatsPerRace: number;
-    shardsPerTicket: number;
     entryFeeUnits: string;
     fullPotUnits: string;
     minDepositUnits: string;
@@ -100,11 +99,8 @@ export type PlayerProfile = {
     lifetimeWageredUnits: string;
     lifetimeWonUnits: string;
   };
-  vault: {
-    units: string;
-    shards: number;
-    shardsPerTicket: number;
-    progress: number;
+  economy: {
+    seatsPerRace: number;
     ticketPriceUnits: string;
   };
   tickets: Array<{

@@ -7,15 +7,13 @@ import { Nav } from '@/components/Nav';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { DepositPanel } from '@/components/wallet/DepositPanel';
 import { WithdrawPanel } from '@/components/wallet/WithdrawPanel';
-import { VaultCard } from '@/components/ShardMeter';
 import { ClaimWinnings } from '@/components/wallet/ClaimWinnings';
 import { formatUsdc } from '@/lib/format';
 import type { TicketRow } from '@/lib/hooks';
 import { shortAddress } from '@/lib/wallet/useWallet';
 
 /**
- * The vault: money in, money out, shards, tickets, and the ledger behind all of
- * it.
+ * The vault: money in, money out, tickets, and the ledger behind all of it.
  *
  * The ledger is not an afterthought. This app takes real deposits and awards
  * real lottery tickets, so every movement of value gets a row a player can read
@@ -49,7 +47,7 @@ export default function VaultPage() {
         <main className="mx-auto flex min-h-[70vh] max-w-lg flex-col items-center justify-center gap-6 px-5 text-center">
           <h1 className="display text-3xl">Connect to see your vault</h1>
           <p className="text-slate-400">
-            Balances, shards and tickets all live against your wallet address.
+            Your balance and tickets all live against your wallet address.
           </p>
           <ConnectButton />
         </main>
@@ -106,15 +104,26 @@ export default function VaultPage() {
               </div>
             </div>
 
-            {profile && (
-              <VaultCard
-                shards={profile.vault.shards}
-                perTicket={profile.vault.shardsPerTicket}
-                vaultUnits={profile.vault.units}
-                ticketPriceUnits={profile.vault.ticketPriceUnits}
-                ticketsEarned={profile.player.ticketsEarned}
-              />
-            )}
+            <div className="panel panel-lit panel-gold rise p-4 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="eyebrow">Tickets won</div>
+                  <div className="num mt-1 text-4xl font-bold text-[var(--gold)] glow-gold">
+                    {profile?.player.ticketsEarned ?? 0}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="stat-label">Pots taken</div>
+                  <div className="num mt-1 text-2xl font-bold text-slate-100">
+                    {profile?.player.racesWon ?? 0}
+                  </div>
+                </div>
+              </div>
+              <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                Win a race and its pot buys a Megapot ticket outright, minted straight to your
+                wallet. Anything too small to buy one goes back to your balance.
+              </p>
+            </div>
 
             <div className="panel rise p-4 sm:p-6">
               <div className="eyebrow mb-4">Career</div>

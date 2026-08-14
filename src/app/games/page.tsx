@@ -64,7 +64,7 @@ export default function GamesPage() {
         </div>
 
         <p className="mt-9 text-center text-xs text-slate-600">
-          One vault funds every cabinet. Shards you win in any game count toward the same ticket.
+          One balance funds every cabinet, and every cabinet pays out in real Megapot tickets.
         </p>
       </main>
     </>

@@ -35,7 +35,33 @@ export type CurrentDrawing = DrawingState & { drawingId: bigint };
  * every ticket we build must be validated against a fresh read. Never hardcode
  * them — as of 8 Aug 2026 they happen to be 30 and 10, but that is not a contract.
  */
-export async function getCurrentDrawing(): Promise<CurrentDrawing> {
+/**
+ * Short-lived cache for the drawing read.
+ *
+ * This is two sequential contract calls — the second needs the id from the
+ * first — so it costs a full round trip each time, and it is on the critical
+ * path of almost every request: the config route, the profile route and joining
+ * a lobby all need the live ticket price. Uncached that was ~500ms of every page
+ * load, several times over, which is what made balances and the deposit panel
+ * appear so long after the page did.
+ *
+ * A few seconds is safe. Drawing state changes once per drawing (daily on
+ * mainnet), and the only fast-moving field is `prizePool`, which is a headline
+ * number rather than something we transact against. Anything that *spends*
+ * money re-reads inside its own transaction anyway.
+ *
+ * Deliberately short enough that `jackpotLock` is never badly stale — mistaking
+ * a settling protocol for an open one wastes a purchase.
+ */
+const CACHE_MS = Number(process.env.MEGAPOT_DRAWING_CACHE_MS ?? 6_000);
+
+type CacheEntry = { at: number; value: CurrentDrawing };
+const g = globalThis as unknown as {
+  __megapotDrawing?: CacheEntry;
+  __megapotDrawingInflight?: Promise<CurrentDrawing>;
+};
+
+async function readDrawing(): Promise<CurrentDrawing> {
   const drawingId = (await publicClient.readContract({
     address: CONTRACTS.jackpot,
     abi: JACKPOT_ABI,
@@ -50,6 +76,32 @@ export async function getCurrentDrawing(): Promise<CurrentDrawing> {
   })) as DrawingState;
 
   return { ...s, drawingId };
+}
+
+export async function getCurrentDrawing(): Promise<CurrentDrawing> {
+  const hit = g.__megapotDrawing;
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+
+  // Share one in-flight read between concurrent callers. A page that fires
+  // three requests at once should cost one round trip, not three.
+  if (g.__megapotDrawingInflight) return g.__megapotDrawingInflight;
+
+  const inflight = readDrawing()
+    .then((value) => {
+      g.__megapotDrawing = { at: Date.now(), value };
+      return value;
+    })
+    .finally(() => {
+      g.__megapotDrawingInflight = undefined;
+    });
+
+  g.__megapotDrawingInflight = inflight;
+  return inflight;
+}
+
+/** Force the next read to hit the chain. Used after anything that spends. */
+export function invalidateDrawingCache() {
+  g.__megapotDrawing = undefined;
 }
 
 /**

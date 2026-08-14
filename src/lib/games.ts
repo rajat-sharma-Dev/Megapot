@@ -61,7 +61,7 @@ export const GAMES: ArcadeGame[] = [
    *
    * The seat counts vary on purpose: the arcade is not five-handed by rule, it
    * is five-handed because Rally Vault is. The pot maths works at any table
-   * size, since a seat always stakes one shard.
+   * size, since a seat always stakes the same fraction of a ticket.
    */
   {
     id: 'cabinet-02',

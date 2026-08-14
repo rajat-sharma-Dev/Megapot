@@ -3,7 +3,7 @@ import { getCurrentDrawing, formatUsdc } from '@/lib/megapot/drawing';
 import { NETWORK, CONTRACTS, CHAIN_ID } from '@/lib/megapot/addresses';
 import { getTreasuryAddress } from '@/lib/megapot/client';
 import { getHouseFloat } from '@/lib/db/store';
-import { entryFeeUnits, minDepositUnits, SEATS_PER_RACE, SHARDS_PER_TICKET } from '@/lib/vault/economy';
+import { entryFeeUnits, minDepositUnits, SEATS_PER_RACE } from '@/lib/vault/economy';
 import { advanceLobbies } from '@/lib/vault/lobby';
 import { isDryRun } from '@/lib/megapot/purchase';
 
@@ -19,8 +19,11 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET() {
   try {
-    // Whoever loads the app is also the scheduler — see advanceLobbies.
-    await advanceLobbies().catch(() => {});
+    // Whoever loads the app is also the scheduler — but they should not wait for
+    // it. Advancing lobbies can settle a race, which replays five runs and can
+    // buy a ticket; blocking a config read on that put seconds into every page
+    // load. Fired and forgotten: the next request picks up anything missed.
+    void advanceLobbies().catch(() => {});
 
     const d = await getCurrentDrawing();
     const fee = entryFeeUnits(d.ticketPrice);
@@ -57,7 +60,6 @@ export async function GET() {
 
       economy: {
         seatsPerRace: SEATS_PER_RACE,
-        shardsPerTicket: Number(SHARDS_PER_TICKET),
         entryFeeUnits: fee.toString(),
         fullPotUnits: (fee * BigInt(SEATS_PER_RACE)).toString(),
         minDepositUnits: minDepositUnits(d.ticketPrice).toString(),

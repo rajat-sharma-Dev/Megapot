@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 import { breakdownRows, ordinal } from '@/lib/points/scoring';
-import { ShardMeter } from '../ShardMeter';
 import { useSound } from '@/lib/audio/SoundProvider';
 import { formatUsdc } from '@/lib/format';
 import type { LobbyView, PlayerProfile } from '@/lib/hooks';
@@ -38,7 +37,6 @@ export function Results({
 
   const iWon = !!settlement && settlement.winnerSeat === lobby.mySeat && lobby.mySeat !== null;
   const fromBehind = iWon && (breakdown?.placement ?? 1) > 1;
-  const shardsWon = iWon ? settlement!.stakedSeats : 0;
   const ticketsMinted = iWon ? (settlement?.ticketsMinted ?? 0) : 0;
 
   // One stinger per result, on the first render that has a settlement.
@@ -108,8 +106,7 @@ export function Results({
           </p>
         ) : iWon ? (
           <p className="mt-4 text-sm text-slate-300">
-            <span className="num font-bold text-[var(--gold)]">{shardsWon}</span>{' '}
-            {shardsWon === 1 ? 'shard' : 'shards'} into your vault
+            {ticketsMinted > 0 ? 'Bought you a Megapot ticket' : 'Straight into your balance'}
             {margin > 0 && (
               <>
                 {' '}
@@ -185,8 +182,7 @@ export function Results({
 
       {settlement.mintError && iWon && (
         <div className="panel rise border-[var(--gold)]/30 p-5 text-sm text-[var(--gold)]">
-          {settlement.mintError} Your shards are safe in the vault and the ticket buys on the next
-          attempt.
+          {settlement.mintError}
         </div>
       )}
 
@@ -283,27 +279,20 @@ export function Results({
         </div>
       )}
 
-      {/* ── Vault progress ──────────────────────────────────────────── */}
+      {/* ── Where the money went ────────────────────────────────────── */}
       {profile && (
         <div className="panel rise p-4 sm:p-6" style={{ animationDelay: '260ms' }}>
           <div className="flex items-center justify-between">
-            <div className="eyebrow">Shard vault</div>
-            <span className="num text-sm font-bold text-[var(--gold)]">
-              {profile.vault.shards % profile.vault.shardsPerTicket}/
-              {profile.vault.shardsPerTicket}
+            <div className="eyebrow">Your balance</div>
+            <span className="num text-lg font-bold text-[var(--accent)]">
+              {formatUsdc(profile.balance.creditsUnits)}
             </span>
           </div>
-          <div className="mt-3">
-            <ShardMeter
-              shards={profile.vault.shards}
-              perTicket={profile.vault.shardsPerTicket}
-              justWon={shardsWon}
-              size="lg"
-            />
-          </div>
-          <p className="mt-3 text-xs text-slate-500">
-            Balance <span className="num text-slate-300">{formatUsdc(profile.balance.creditsUnits)}</span> ·{' '}
-            <span className="num text-slate-300">{profile.balance.entriesAffordable}</span> entries left
+          <p className="mt-2 text-xs text-slate-500">
+            <span className="num text-slate-300">{profile.balance.entriesAffordable}</span> more
+            {profile.balance.entriesAffordable === 1 ? ' seat' : ' seats'} at this stake ·{' '}
+            <span className="num text-slate-300">{profile.player.ticketsEarned}</span> tickets won
+            in total
           </p>
         </div>
       )}

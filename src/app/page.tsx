@@ -185,7 +185,7 @@ export default function Arcade() {
           <Step
             n="03"
             title="Win the ticket"
-            body="Five shards make a real Megapot ticket, minted straight to your wallet."
+            body="Win the pot and it buys a real Megapot ticket, minted straight to your wallet."
             tone="gold"
           />
         </div>

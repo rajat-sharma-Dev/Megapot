@@ -29,10 +29,12 @@ export type Player = {
    */
   creditsUnits: string;
   /**
-   * The shard vault: pot winnings held until they add up to a whole ticket.
-   * Denominated in base units rather than a shard counter, because the ticket
-   * price is live protocol state and can move between winning a shard and
-   * spending it.
+   * Legacy field, retained only so old rows still parse.
+   *
+   * Winnings used to accumulate here toward a ticket. They no longer do — a pot
+   * buys a ticket outright, and anything short of one is refunded to
+   * `creditsUnits`. Any balance left in here is folded into credits on load, so
+   * nobody's winnings are stranded by the change.
    */
   vaultUnits: string;
 
@@ -256,8 +258,19 @@ function hydratePlayer(raw: Partial<Player> & { id: string; credits?: unknown })
     id: raw.id,
     name: raw.name || `Racer ${raw.id.slice(2, 6).toUpperCase()}`,
     // `credits` was the field name before deposits became real money.
-    creditsUnits: toUnits(raw.creditsUnits ?? raw.credits).toString(),
-    vaultUnits: toUnits(raw.vaultUnits).toString(),
+    /**
+     * Legacy balances are folded forward, not dropped.
+     *
+     * `credits` was the field name before deposits became real money, and
+     * `vaultUnits` held winnings that used to accumulate toward a ticket. Pots
+     * now buy tickets outright, so anything left in the old vault is added to
+     * the spendable balance — the alternative is silently stranding money
+     * somebody won.
+     */
+    creditsUnits: (
+      toUnits(raw.creditsUnits ?? raw.credits) + toUnits(raw.vaultUnits)
+    ).toString(),
+    vaultUnits: '0',
     lifetimeDepositedUnits: toUnits(raw.lifetimeDepositedUnits).toString(),
     lifetimeWithdrawnUnits: toUnits(raw.lifetimeWithdrawnUnits).toString(),
     lifetimeWageredUnits: toUnits(raw.lifetimeWageredUnits).toString(),
@@ -357,8 +370,8 @@ export async function listPlayers(): Promise<Player[]> {
  *
  * Deliberately one function rather than two: an adjustment without a ledger row
  * is money that appears from nowhere, and this is the only place either can
- * happen. `field` picks which of the two balances moves — spendable credits, or
- * the shard vault.
+ * happen. `field` is retained from when there were two balances; everything
+ * moves through `creditsUnits` now.
  */
 export async function adjustBalance(opts: {
   playerId: string;

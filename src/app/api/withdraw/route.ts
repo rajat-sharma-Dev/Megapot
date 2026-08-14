@@ -20,8 +20,8 @@ const isAddress = (a: unknown): a is string =>
  * whereas this order can at worst pay out twice under a torn request — and the
  * balance check plus a confirmed receipt makes that visible rather than silent.
  *
- * The shard vault is deliberately NOT withdrawable. Shards are ticket value, not
- * cash; they leave as a Megapot ticket or they don't leave.
+ * The whole balance is withdrawable. Winnings a pot was too small to turn into
+ * a ticket are refunded into it, so nothing is held back out of reach.
  */
 export async function POST(req: Request) {
   try {

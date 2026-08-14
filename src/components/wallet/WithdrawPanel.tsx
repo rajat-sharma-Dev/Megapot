@@ -13,8 +13,8 @@ import { formatUsdc } from '@/lib/format';
  * takes real deposits and has no exit is a game nobody should deposit into, so
  * this is a first-class panel and not a support ticket.
  *
- * The shard vault is deliberately not withdrawable — shards are ticket value,
- * not cash. They leave as a Megapot ticket or they don't leave.
+ * The whole balance is withdrawable, including winnings a pot was too small to
+ * turn into a ticket — those are refunded into it rather than held back.
  */
 export function WithdrawPanel({
   creditsUnits,

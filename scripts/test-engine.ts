@@ -20,10 +20,7 @@ import { SECTION_TEMPLATES } from '../src/lib/game/sections';
 import { TICK_DT, FUEL_MAX, FUEL_START, FUEL_SECONDS_PER_TANK } from '../src/lib/game/engine';
 import { BOT_PROFILES, type BotSkill } from '../src/lib/game/bots';
 import { resolvePot, rankSeats, wonFromBehind, type PotSeat } from '../src/lib/vault/pot';
-import {
-  entryFeeUnits, vaultToTickets, shardsOf, ticketProgress,
-  SHARDS_PER_TICKET, SEATS_PER_RACE,
-} from '../src/lib/vault/economy';
+import { entryFeeUnits, potToTickets, SEATS_PER_RACE } from '../src/lib/vault/economy';
 
 /**
  * Replay one seat's log through the authoritative lobby simulation — exactly
@@ -553,11 +550,11 @@ group('Entry fee (a fifth of a ticket, on any network)');
   check(entryFeeUnits(mainnet) === 200_000n, 'mainnet: a $1.00 ticket means a $0.20 entry');
   check(entryFeeUnits(sepolia) === 2_000n, 'sepolia: a $0.01 ticket means a $0.002 entry');
   check(
-    entryFeeUnits(mainnet) * SHARDS_PER_TICKET === mainnet,
+    entryFeeUnits(mainnet) * BigInt(SEATS_PER_RACE) === mainnet,
     'five entries fund exactly one ticket, with nothing left over',
   );
   check(
-    entryFeeUnits(sepolia) * SHARDS_PER_TICKET === sepolia,
+    entryFeeUnits(sepolia) * BigInt(SEATS_PER_RACE) === sepolia,
     'and the same holds on testnet, where a ticket costs 100× less',
   );
   check(
@@ -566,57 +563,52 @@ group('Entry fee (a fifth of a ticket, on any network)');
   );
 }
 
-// ── Shard vault → tickets ───────────────────────────────────────────────────
-group('Shard vault conversion');
+// ── Pot → tickets ───────────────────────────────────────────────────────────
+group('Pot conversion');
 {
   const price = 1_000_000n;
   const fee = entryFeeUnits(price);
 
-  const exact = vaultToTickets(3_000_000n, price);
-  check(exact.tickets === 3 && exact.remainderUnits === 0n, 'an exact vault buys whole tickets and keeps nothing back');
+  const full = potToTickets(price, price);
+  check(full.tickets === 1 && full.remainderUnits === 0n, 'a full table buys exactly one ticket');
 
-  const partial = vaultToTickets(3_400_000n, price);
-  check(partial.tickets === 3, 'a part-filled vault buys only whole tickets');
-  check(partial.remainderUnits === 400_000n, 'and the remainder stays in the vault, not lost');
+  const short = potToTickets(fee * 3n, price);
   check(
-    partial.spentUnits + partial.remainderUnits === 3_400_000n,
-    'every base unit is accounted for — spent or held',
+    short.tickets === 0 && short.remainderUnits === fee * 3n,
+    'a short pot buys nothing and refunds the lot — no value is held back',
   );
 
-  const tiny = vaultToTickets(200_000n, price);
-  check(tiny.tickets === 0 && tiny.remainderUnits === 200_000n, 'one shard buys nothing and is held for the next win');
+  const double = potToTickets(price * 2n, price);
+  check(double.tickets === 2 && double.remainderUnits === 0n, 'twice the price buys two tickets');
 
-  const free = vaultToTickets(500_000n, 0n);
+  const odd = potToTickets(price * 2n + fee, price);
+  check(
+    odd.tickets === 2 && odd.remainderUnits === fee,
+    'and the leftover is returned rather than rounded away',
+  );
+
+  const free = potToTickets(500_000n, 0n);
   check(free.tickets === 0, 'a zero ticket price cannot divide by zero');
 
-  // Shard display maths.
-  check(shardsOf(fee * 3n, fee) === 3, 'three entry fees read as three shards');
-  check(shardsOf(0n, fee) === 0, 'an empty vault is zero shards');
-  check(shardsOf(fee, 0n) === 0, 'a zero fee cannot divide by zero either');
-  check(shardsOf(fee * 5n, fee) === Number(SHARDS_PER_TICKET), 'five shards is a whole ticket');
-
-  check(ticketProgress(0n, price) === 0, 'an empty vault shows no progress');
-  check(Math.abs(ticketProgress(fee * 2n, price) - 0.4) < 1e-6, 'two of five shards reads as 40%');
-  check(ticketProgress(price, price) === 0, 'a completed ticket resets the meter rather than pinning it at 100%');
-  check(ticketProgress(price + fee, price) > 0, 'and the overflow starts the next one');
-
-  // Conservation over a long run of wins: money in must equal tickets plus
-  // whatever is still held. This is the property that makes the shard model
-  // honest rather than a rounding trick.
-  let vault = 0n;
+  // Conservation: every base unit staked ends up as a ticket or as a refund.
   let minted = 0;
-  for (let i = 0; i < 137; i++) {
-    vault += fee * BigInt((i % 5) + 1);
-    const { tickets, spentUnits } = vaultToTickets(vault, price);
-    minted += tickets;
-    vault -= spentUnits;
+  let refunded = 0n;
+  let staked = 0n;
+  for (let seats = 1; seats <= SEATS_PER_RACE; seats++) {
+    for (let round = 0; round < 4; round++) {
+      const pot = fee * BigInt(seats);
+      staked += pot;
+      const r = potToTickets(pot, price);
+      minted += r.tickets;
+      refunded += r.remainderUnits;
+    }
   }
-  const staked = Array.from({ length: 137 }, (_, i) => fee * BigInt((i % 5) + 1)).reduce((a, b) => a + b, 0n);
   check(
-    BigInt(minted) * price + vault === staked,
-    `nothing is created or destroyed across 137 wins (${minted} tickets + ${vault} held)`,
+    BigInt(minted) * price + refunded === staked,
+    `nothing is created or destroyed across 20 pots (${minted} tickets + ${refunded} refunded)`,
   );
 }
+
 // ── Summary ─────────────────────────────────────────────────────────────────
 console.log(
   fail === 0

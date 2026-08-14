@@ -18,9 +18,7 @@ import { formatUsdc, type DrawingState } from '../src/lib/megapot/drawing';
 // as "$0.00". The display formatter keeps significant digits, so the economy
 // section uses that instead.
 import { formatUsdc as formatPrecise } from '../src/lib/format';
-import {
-  entryFeeUnits, vaultToTickets, SHARDS_PER_TICKET, SEATS_PER_RACE,
-} from '../src/lib/vault/economy';
+import { entryFeeUnits, potToTickets, SEATS_PER_RACE } from '../src/lib/vault/economy';
 
 const NETWORKS = [
   { name: 'Base Mainnet', chain: base, rpc: 'https://mainnet.base.org', addrs: ADDRESSES.mainnet },
@@ -147,10 +145,10 @@ function checkEconomy(label: string, ticketPrice: bigint) {
   const fee = entryFeeUnits(ticketPrice);
   ok(`entry fee = ${formatPrecise(fee)} (a fifth of a ticket)`);
 
-  if (fee * SHARDS_PER_TICKET === ticketPrice) {
-    ok(`${SHARDS_PER_TICKET} shards fund exactly one ticket, no rounding loss`);
+  if (fee * BigInt(SEATS_PER_RACE) === ticketPrice) {
+    ok(`${SEATS_PER_RACE} seats fund exactly one ticket, no rounding loss`);
   } else {
-    bad(`${SHARDS_PER_TICKET} × ${fee} = ${fee * SHARDS_PER_TICKET}, expected ${ticketPrice}`);
+    bad(`${SEATS_PER_RACE} × ${fee} = ${fee * BigInt(SEATS_PER_RACE)}, expected ${ticketPrice}`);
   }
 
   // The core claim of the design: a full lobby is exactly one ticket.
@@ -161,13 +159,13 @@ function checkEconomy(label: string, ticketPrice: bigint) {
     bad(`full pot ${fullPot} != ticket price ${ticketPrice}`);
   }
 
-  // A player who wins 23 shards over time: whole tickets minted, remainder held.
-  const vault = fee * 23n;
-  const { tickets, spentUnits, remainderUnits } = vaultToTickets(vault, ticketPrice);
-  if (spentUnits + remainderUnits === vault) {
-    ok(`23 shards (${formatPrecise(vault)}) → ${tickets} tickets, ${formatPrecise(remainderUnits)} held`);
+  // A player who wins 23 seats' worth over time: whole tickets minted, remainder held.
+  const pot = fee * 23n;
+  const { tickets, spentUnits, remainderUnits } = potToTickets(pot, ticketPrice);
+  if (spentUnits + remainderUnits === pot) {
+    ok(`23 seats' worth (${formatPrecise(pot)}) → ${tickets} tickets, ${formatPrecise(remainderUnits)} refunded`);
   } else {
-    bad(`vault accounting lost value: ${spentUnits} + ${remainderUnits} != ${vault}`);
+    bad(`pot accounting lost value: ${spentUnits} + ${remainderUnits} != ${pot}`);
   }
 
   // Winner-take-all pots of every size must conserve value exactly.
@@ -179,7 +177,7 @@ function checkEconomy(label: string, ticketPrice: bigint) {
       const pot = fee * BigInt(seats);
       staked += pot;
       held += pot;
-      const conv = vaultToTickets(held, ticketPrice);
+      const conv = potToTickets(held, ticketPrice);
       minted += conv.tickets;
       held -= conv.spentUnits;
     }

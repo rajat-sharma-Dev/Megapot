@@ -6,9 +6,8 @@
  * and plays to keep it. Everyone drives the same track. The highest total score
  * takes the entire pot — not the racer who crossed the line first, the racer who
  * *scored* most, which is a different question and usually a different answer.
- * The pot lands in the winner's shard vault, and the moment that vault holds a
- * whole ticket's worth it is spent on a real Megapot ticket minted straight to
- * their wallet.
+ * The pot buys a real Megapot ticket outright, minted straight to the winner's
+ * wallet; anything too small to buy one is refunded to their balance.
  *
  * Two things about this file are load bearing:
  *
@@ -29,7 +28,7 @@ import {
 import { simulateLobby, botRoster, type InputLog, type SeatSpec } from '../game/replay';
 import { scoreRace } from '../points/scoring';
 import { resolvePot, refundSeats, type PotSeat } from './pot';
-import { SEATS_PER_RACE, entryFeeUnits, vaultToTickets } from './economy';
+import { SEATS_PER_RACE, entryFeeUnits, potToTickets } from './economy';
 import { getCurrentDrawing } from '../megapot/drawing';
 import { buyTicketsFor, SettlementInProgressError } from '../megapot/purchase';
 import { NETWORK } from '../megapot/addresses';
@@ -379,20 +378,26 @@ export async function settleLobby(lobby: Lobby): Promise<Lobby> {
     await adjustHouseFloat(pot.potUnits);
   } else if (pot.winner) {
     const winner = await getOrCreatePlayer(pot.winner.id);
-    await adjustBalance({
-      playerId: winner.id,
-      field: 'vaultUnits',
-      deltaUnits: pot.potUnits,
-      kind: 'win',
-      lobbyId: lobby.id,
-      note: `Won a ${pot.stakedSeats}-seat pot with ${pot.winner.score?.total ?? 0} points`,
-    });
+
     await updatePlayer(winner.id, {
       racesWon: winner.racesWon + 1,
       lifetimeWonUnits: (toUnits(winner.lifetimeWonUnits) + pot.potUnits).toString(),
     });
 
-    const minted = await mintFromVault(winner.id, toUnits(lobby.ticketPriceUnits), lobby.id);
+    /**
+     * The pot buys tickets directly.
+     *
+     * No intermediate balance to hold it in: the winner's stake became a
+     * Megapot ticket, or — if the pot was short of a whole one because the
+     * house float could not stake every seat — it goes back to their spendable
+     * balance. Either way the value is somewhere they can see it immediately.
+     */
+    const minted = await mintFromPot(
+      winner.id,
+      pot.potUnits,
+      toUnits(lobby.ticketPriceUnits),
+      lobby.id,
+    );
     ticketsMinted = minted.tickets;
     txHashes = minted.txHashes;
     mintError = minted.error;
@@ -436,37 +441,44 @@ export async function settleLobby(lobby: Lobby): Promise<Lobby> {
 }
 
 /**
- * Spend a player's shard vault on real Megapot tickets, as many whole ones as it
- * can afford.
+ * Turn a won pot into real Megapot tickets.
  *
- * The vault is debited only after the purchase succeeds. A failed mint — an
- * unfunded treasury, a jackpot mid-settlement — therefore leaves the value
- * exactly where it was, and the next win retries it. Losing a player's ticket to
- * a transient RPC error is not an acceptable failure mode.
+ * The order here is the important part. Tickets are bought FIRST, and the
+ * player's balance is only credited with what could not be spent. A failed
+ * purchase therefore refunds the entire pot to their balance rather than
+ * vanishing — losing somebody's winnings to a transient RPC error or an
+ * unfunded treasury is not an acceptable failure mode, and it is the failure
+ * mode that actually happens.
  */
-export async function mintFromVault(
+export async function mintFromPot(
   playerId: string,
+  potUnits: bigint,
   ticketPriceUnits: bigint,
   lobbyId: string | null,
 ): Promise<{ tickets: number; txHashes: string[]; error: string | null }> {
   const player = await getOrCreatePlayer(playerId);
-  const vault = toUnits(player.vaultUnits);
-  const { tickets, spentUnits } = vaultToTickets(vault, ticketPriceUnits);
+  const { tickets, remainderUnits } = potToTickets(potUnits, ticketPriceUnits);
 
-  if (tickets <= 0) return { tickets: 0, txHashes: [], error: null };
+  /** Give back whatever tickets could not absorb. */
+  const refund = async (units: bigint, note: string) => {
+    if (units <= 0n) return;
+    await adjustBalance({
+      playerId: player.id,
+      field: 'creditsUnits',
+      deltaUnits: units,
+      kind: 'win',
+      lobbyId,
+      note,
+    });
+  };
+
+  if (tickets <= 0) {
+    await refund(potUnits, 'Pot won — too small for a whole ticket, returned to your balance');
+    return { tickets: 0, txHashes: [], error: null };
+  }
 
   try {
     const results = await buyTicketsFor(player.id as `0x${string}`, tickets);
-
-    await adjustBalance({
-      playerId: player.id,
-      field: 'vaultUnits',
-      deltaUnits: -spentUnits,
-      kind: 'ticket',
-      txHash: results[0]?.txHash ?? null,
-      lobbyId,
-      note: `${tickets} Megapot ticket${tickets === 1 ? '' : 's'} minted to your wallet`,
-    });
 
     for (const [i, res] of results.entries()) {
       await recordTicket({
@@ -485,15 +497,20 @@ export async function mintFromVault(
     const after = await getOrCreatePlayer(player.id);
     await updatePlayer(player.id, { ticketsEarned: after.ticketsEarned + tickets });
 
+    await refund(remainderUnits, 'Pot remainder returned to your balance');
+
     return { tickets, txHashes: results.map((r) => r.txHash), error: null };
   } catch (err) {
+    // The purchase failed, so the winner keeps the money instead of the ticket.
+    await refund(potUnits, 'Pot won — ticket purchase failed, refunded to your balance');
+
     return {
       tickets: 0,
       txHashes: [],
       error:
         err instanceof SettlementInProgressError
-          ? 'Megapot is mid-draw right now. Your shards are safe and buy a ticket on the next win.'
-          : (err as Error).message,
+          ? 'Megapot is mid-draw, so no ticket could be bought. Your winnings are in your balance.'
+          : `Ticket purchase failed (${(err as Error).message.split('\n')[0]}). Your winnings are in your balance.`,
     };
   }
 }
@@ -552,11 +569,5 @@ export async function getLobbyAdvanced(id: string): Promise<Lobby | null> {
   return lobby;
 }
 
-/** Retry a mint that failed earlier — the vault still holds the value. */
-export async function retryMint(playerId: string): Promise<{ tickets: number; error: string | null }> {
-  const drawing = await getCurrentDrawing();
-  const res = await mintFromVault(playerId, drawing.ticketPrice, null);
-  return { tickets: res.tickets, error: res.error };
-}
 
 export type { Lobby, SeatRecord, Player };

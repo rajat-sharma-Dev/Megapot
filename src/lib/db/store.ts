@@ -305,6 +305,22 @@ async function load(): Promise<DbShape> {
     db.players[id] = hydratePlayer({ ...(raw as Partial<Player>), id });
   }
   if (!Array.isArray(db.tickets)) db.tickets = [];
+
+  /**
+   * Drop duplicate ticket ids written before ids were unique per race.
+   *
+   * Ticket ids used to be `${txHash}-${i}`, and a dry-run hash is deterministic
+   * on (recipient, drawing, count) — so two wins in the same drawing wrote the
+   * same id twice. Reading is the right place to repair it: every existing data
+   * file already contains the duplicates, and no caller should have to defend
+   * against them.
+   */
+  const seenTicketIds = new Set<string>();
+  db.tickets = db.tickets.filter((t) => {
+    if (!t?.id || seenTicketIds.has(t.id)) return false;
+    seenTicketIds.add(t.id);
+    return true;
+  });
   if (!Array.isArray(db.ledger)) db.ledger = [];
   if (!db.lobbies || typeof db.lobbies !== 'object') db.lobbies = {};
   db.houseFloatUnits = toUnits(db.houseFloatUnits ?? HOUSE_FLOAT_SEED).toString();
@@ -529,7 +545,19 @@ async function file_bumpOrbRollover(claimed: boolean): Promise<number> {
 async function file_recordTicket(t: Omit<TicketRecord, 'createdAt'>): Promise<TicketRecord> {
   const db = await load();
   const rec: TicketRecord = { ...t, playerId: normalizeAddress(t.playerId), createdAt: now() };
-  db.tickets.push(rec);
+
+  /**
+   * Upsert, matching the Postgres backend's `ON CONFLICT (id) DO UPDATE`.
+   *
+   * This used to push unconditionally, so a repeated id produced two rows with
+   * the same primary key — which React then reported as duplicate children in
+   * the ticket list. The two backends must agree about what an id means, or a
+   * bug only reproduces on one of them.
+   */
+  const existing = db.tickets.findIndex((x) => x.id === rec.id);
+  if (existing >= 0) db.tickets[existing] = rec;
+  else db.tickets.push(rec);
+
   await persist();
   return rec;
 }

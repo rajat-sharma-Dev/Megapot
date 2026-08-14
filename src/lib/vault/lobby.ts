@@ -518,7 +518,10 @@ export async function mintFromPot(
 
     for (const [i, res] of results.entries()) {
       await recordTicket({
-        id: `${res.txHash}-${i}`,
+        // The lobby id is in the key because a dry-run hash is deterministic on
+        // (recipient, drawing, count) — so two wins in the same drawing produce
+        // an identical hash, and without this they collide into one record.
+        id: `${res.txHash}-${lobbyId ?? 'na'}-${i}`,
         playerId: player.id,
         txHash: res.txHash,
         drawingId: res.drawingId.toString(),

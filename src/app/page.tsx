@@ -74,14 +74,14 @@ export default function Arcade() {
 
       <Ticker jackpot={jackpot} recent={recent} />
 
-      <header className="relative z-20 flex flex-wrap items-center justify-between gap-2 px-3 py-3 sm:gap-3 sm:px-7">
+      <header className="relative z-20 flex h-14 items-center justify-between gap-2 px-3 sm:gap-3 sm:px-7">
         <div className="flex items-center gap-2.5">
           <Bolt />
           <span className="display text-[13px] font-bold tracking-[0.2em] text-slate-400">
             MEGA ARCADE
           </span>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex min-w-0 shrink items-center justify-end gap-2">
           {/* Balance sits beside the wallet control, so "can I play" is answered
               without leaving the title screen. */}
           <VaultChip profile={profile} />

@@ -25,7 +25,7 @@ export function Nav({ profile }: { profile?: PlayerProfile | null }) {
   const { play } = useSound();
 
   return (
-    <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#04060c]/80 backdrop-blur-xl">
+    <header className="sticky top-0 z-40 h-16 shrink-0 overflow-visible border-b border-white/[0.07] bg-[#04060c]/80 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-3 sm:gap-5 sm:px-5">
         <Link
           href="/"

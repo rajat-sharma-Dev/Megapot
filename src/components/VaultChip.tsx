@@ -20,7 +20,7 @@ export function VaultChip({ profile }: { profile: PlayerProfile | null | undefin
     <Link
       href="/vault"
       title="Your arcade vault"
-      className="flex items-center gap-2.5 rounded-sm border border-white/10 bg-white/[0.04] px-2.5 py-1.5 transition-colors hover:bg-white/[0.08]"
+      className="flex h-9 min-w-0 shrink items-center gap-2.5 rounded-sm border border-white/10 bg-white/[0.04] px-2.5 transition-colors hover:bg-white/[0.08]"
     >
       <div className="leading-tight">
         <div className="text-[9px] uppercase tracking-[0.14em] text-slate-600">Vault</div>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useWallet } from '@/lib/wallet/useWallet';
 import { useSound } from '@/lib/audio/SoundProvider';
 import { shortAddress } from '@/lib/wallet/useWallet';
@@ -28,6 +29,9 @@ function usePopoverPlacement(
   width: number,
 ) {
   const [style, setStyle] = useState<React.CSSProperties>({ top: -9999, left: -9999 });
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!open) return;
@@ -64,7 +68,63 @@ function usePopoverPlacement(
     };
   }, [anchor, open, width]);
 
-  return style;
+  return { style, mounted };
+}
+
+/**
+ * Render a popover into `document.body`.
+ *
+ * Left inside the header it is a child of a flex row, and a child of a flex row
+ * can change that row's height — which is exactly what was happening: opening
+ * the account menu made the nav grow taller and shunted the wallet chip upward.
+ * A portal removes it from the layout entirely, so it cannot resize, wrap or be
+ * clipped by any ancestor no matter how they are styled.
+ */
+function Popover({
+  open,
+  mounted,
+  style,
+  className,
+  children,
+  onOutside,
+  anchor,
+}: {
+  open: boolean;
+  mounted: boolean;
+  style: React.CSSProperties;
+  className: string;
+  children: React.ReactNode;
+  onOutside: () => void;
+  anchor: React.RefObject<HTMLElement | null>;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    // The panel now lives outside the trigger, so a click inside it is no longer
+    // "inside" the anchor — both have to be checked or it closes on its own.
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (panel.current?.contains(t) || anchor.current?.contains(t)) return;
+      onOutside();
+    };
+    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onOutside();
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open, onOutside, anchor]);
+
+  if (!open || !mounted) return null;
+
+  return createPortal(
+    <div ref={panel} style={style} className={className}>
+      {children}
+    </div>,
+    document.body,
+  );
 }
 
 export function ConnectButton({ compact }: { compact?: boolean }) {
@@ -72,21 +132,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
   const { play } = useSound();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const placement = usePopoverPlacement(ref, open, 288);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onEsc);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onEsc);
-    };
-  }, [open]);
+  const { style: placement, mounted } = usePopoverPlacement(ref, open, 288);
 
   /**
    * Connection state is not readable until after mount, and pretending
@@ -121,7 +167,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
           w.switchToTarget();
         }}
         disabled={w.switching}
-        className="btn btn-danger px-3 py-1.5 text-xs"
+        className="btn btn-danger h-9 shrink-0 px-3 text-xs"
       >
         {w.switching ? 'Switching…' : `Switch to ${w.chainLabel}`}
       </button>
@@ -136,7 +182,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
             play('click');
             setOpen((o) => !o);
           }}
-          className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/[0.04] px-2.5 py-1.5 transition-colors hover:bg-white/[0.08]"
+          className="flex h-9 shrink-0 items-center gap-2 rounded-sm border border-white/10 bg-white/[0.04] px-2.5 transition-colors hover:bg-white/[0.08]"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
           <div className="text-left leading-tight">
@@ -147,8 +193,14 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
           </div>
         </button>
 
-        {open && (
-          <div style={placement} className="panel fixed z-50 w-64 max-w-[calc(100vw-1.5rem)] p-3 pop">
+        <Popover
+          open={open}
+          mounted={mounted}
+          style={placement}
+          anchor={ref}
+          onOutside={() => setOpen(false)}
+          className="panel fixed z-[100] max-w-[calc(100vw-1.5rem)] p-3 pop"
+        >
             <div className="stat-label px-1">Connected with {w.connectorName}</div>
             <div className="num mt-1 break-all px-1 text-[11px] text-slate-400">{w.address}</div>
 
@@ -173,8 +225,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
                 Disconnect
               </button>
             </div>
-          </div>
-        )}
+        </Popover>
       </div>
     );
   }
@@ -186,7 +237,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
           play('click');
           setOpen((o) => !o);
         }}
-        className="btn btn-primary px-3 py-1.5 text-xs"
+        className="btn btn-primary h-9 shrink-0 px-3 text-xs"
       >
         Connect wallet
       </button>
@@ -203,11 +254,14 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
         below it (or just above, when there isn't room), horizontally clamped so
         it can never leave the screen.
       */}
-      {open && (
-        <div
-          style={placement}
-          className="panel panel-lit fixed z-50 w-72 max-w-[calc(100vw-1.5rem)] p-3 pop"
-        >
+      <Popover
+        open={open}
+        mounted={mounted}
+        style={placement}
+        anchor={ref}
+        onOutside={() => setOpen(false)}
+        className="panel panel-lit fixed z-[100] max-w-[calc(100vw-1.5rem)] p-3 pop"
+      >
           <div className="eyebrow px-1 pb-2">Choose a wallet</div>
 
           <div className="grid gap-2">
@@ -242,8 +296,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
             Your wallet is your account. Every ticket you win is minted straight to it —
             nothing is held on our side.
           </p>
-        </div>
-      )}
+      </Popover>
     </div>
   );
 }

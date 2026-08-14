@@ -10,7 +10,8 @@
     "verify:megapot": "tsx scripts/verify-megapot.ts",
     "test:engine": "tsx scripts/test-engine.ts",
     "test:e2e": "NEXT_DIST_DIR=.next-e2e next build && NEXT_DIST_DIR=.next-e2e tsx scripts/test-e2e.ts",
-    "test": "npm run test:engine && npm run test:e2e"
+    "test": "npm run test:engine && npm run test:e2e",
+    "check:treasury": "tsx scripts/check-treasury.ts"
   },
   "dependencies": {
     "@coinbase/wallet-sdk": "^4.3.7",

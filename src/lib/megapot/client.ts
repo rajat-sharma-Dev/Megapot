@@ -5,7 +5,22 @@ import { NETWORK } from './addresses';
 
 export const CHAIN: Chain = NETWORK === 'mainnet' ? base : baseSepolia;
 
+/**
+ * RPC endpoint, server-private first.
+ *
+ * `RPC_URL` has no `NEXT_PUBLIC_` prefix, so it never reaches the browser and is
+ * the one used for everything server-side — chain reads, deposit verification,
+ * ticket purchases. `NEXT_PUBLIC_RPC_URL` is the fallback and is what the
+ * browser gets for wagmi's own reads.
+ *
+ * The distinction matters because a provider key in a `NEXT_PUBLIC_` variable is
+ * published to every visitor by definition. Keeping two lets the server use a
+ * key that is never exposed, while the client uses one that is restricted by
+ * domain in the provider's dashboard — or the public endpoint, which is rate
+ * limited but leaks nothing.
+ */
 const RPC_URL =
+  process.env.RPC_URL ||
   process.env.NEXT_PUBLIC_RPC_URL ||
   (NETWORK === 'mainnet' ? 'https://mainnet.base.org' : 'https://sepolia.base.org');
 

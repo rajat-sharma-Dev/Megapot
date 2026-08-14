@@ -99,6 +99,14 @@ function Popover({
 }) {
   const panel = useRef<HTMLDivElement>(null);
 
+  // Held in a ref so the listener effect depends only on `open`. Passing the
+  // callback directly re-binds document listeners on every parent render, which
+  // is both wasteful and a good way to miss an event mid-rebind.
+  const outside = useRef(onOutside);
+  useEffect(() => {
+    outside.current = onOutside;
+  });
+
   useEffect(() => {
     if (!open) return;
     // The panel now lives outside the trigger, so a click inside it is no longer
@@ -106,16 +114,16 @@ function Popover({
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (panel.current?.contains(t) || anchor.current?.contains(t)) return;
-      onOutside();
+      outside.current();
     };
-    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onOutside();
+    const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && outside.current();
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onEsc);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onEsc);
     };
-  }, [open, onOutside, anchor]);
+  }, [open, anchor]);
 
   if (!open || !mounted) return null;
 

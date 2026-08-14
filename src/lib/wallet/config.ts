@@ -57,22 +57,31 @@ export const wagmiConfig = createConfig({
     [baseSepolia.id]: http(NETWORK === 'mainnet' ? 'https://sepolia.base.org' : RPC_URL),
   },
   /**
-   * `ssr` is deliberately OFF.
+   * `ssr: true` — and this is load bearing for a reason that is not about SSR.
    *
-   * It looks like the right switch for a Next app and it is not, unless you also
-   * pass `initialState` to `WagmiProvider` (via `cookieStorage` +
-   * `cookieToInitialState`). `ssr: true` tells wagmi to defer hydration and wait
-   * for connection state the server is supposed to supply — and when that state
-   * never arrives, the account status can sit in `reconnecting` indefinitely.
+   * Look at wagmi's `Hydrate`:
    *
-   * That is not theoretical: it froze the connect button behind a permanent
-   * loading skeleton and left `/play` spinning forever, because both gated on a
-   * `ready` flag derived from `isReconnecting`. With `ssr` off, wagmi reads
-   * localStorage on mount and resolves immediately.
+   *     if (!config._internal.ssr) onMount()            // during render
+   *     useEffect(() => { if (ssr) onMount() }, [])     // in an effect
    *
-   * If server-rendered connection state is ever wanted, turn this back on AND
-   * wire `initialState` in the same change — never one without the other.
+   * With `ssr` off, wagmi restores its store *while rendering*, which
+   * synchronously notifies every subscriber — so any component reading
+   * `useAccount` gets a state update mid-render and React throws "Cannot update
+   * a component while rendering a different component". That warning is not
+   * cosmetic: the dropped update is what made the wallet dropdown stop opening.
+   *
+   * I turned this off earlier believing it caused a permanent loading skeleton.
+   * It did not. That was `ready = hydrated && !isReconnecting` in `useWallet`,
+   * which deadlocked whenever a reconnect never resolved. `ready` is now just
+   * `hydrated`, with a separately timeout-bounded `settled` for spinners, so the
+   * original failure cannot recur and the correct flag can go back on.
+   *
+   * Note this pairs with `initialState` when you want server-rendered
+   * connection state (via `cookieStorage` + `cookieToInitialState`). We don't —
+   * every connection-dependent branch is gated on `ready` instead, so the
+   * server and the first client render agree without it.
    */
+  ssr: true,
 });
 
 declare module 'wagmi' {

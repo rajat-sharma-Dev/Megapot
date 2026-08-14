@@ -101,6 +101,7 @@ export default function VaultPage() {
                 <WithdrawPanel
                   creditsUnits={profile?.balance.creditsUnits ?? '0'}
                   onWithdrawn={refresh}
+                  withdrawalsEnabled={!!jackpot?.depositsEnabled}
                 />
               </div>
             </div>

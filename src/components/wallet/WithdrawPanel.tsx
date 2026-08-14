@@ -19,9 +19,21 @@ import { formatUsdc } from '@/lib/format';
 export function WithdrawPanel({
   creditsUnits,
   onWithdrawn,
+  withdrawalsEnabled = true,
 }: {
   creditsUnits: string;
   onWithdrawn: () => void;
+  /**
+   * False when no treasury is configured.
+   *
+   * Withdrawals are signed by the treasury key, so without one every attempt
+   * throws server-side. The deposit panel already disabled itself in that case
+   * and this one did not, which meant a fresh clone showed a working-looking
+   * Withdraw button whose only possible outcome was an error — the exact
+   * inconsistency that made "the deposit option is missing" the reported
+   * symptom rather than "nothing is configured".
+   */
+  withdrawalsEnabled?: boolean;
 }) {
   const w = useWallet();
   const { play } = useSound();
@@ -73,6 +85,18 @@ export function WithdrawPanel({
       setBusy(false);
     }
   };
+
+  if (!withdrawalsEnabled) {
+    return (
+      <div>
+        <div className="eyebrow">Withdraw</div>
+        <p className="mt-2 text-xs leading-relaxed text-slate-500">
+          Unavailable until a treasury wallet is configured — withdrawals are signed by its key.
+          See the deposit panel above for the one-line fix.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div>

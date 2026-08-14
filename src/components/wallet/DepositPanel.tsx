@@ -212,13 +212,41 @@ export function DepositPanel({
     setManualHash('');
   };
 
+  /**
+   * No treasury, no deposits — there is literally nowhere to send the money.
+   *
+   * This is the state a fresh clone lands in, because `.env.local` is gitignored
+   * and never comes with the repo. The previous version of this notice was a
+   * grey box of environment-variable jargon, which reads as "the deposit button
+   * is missing" rather than "you have not configured this yet" — so it now says
+   * what is wrong and exactly what to do about it.
+   */
   if (!jackpot?.depositsEnabled) {
     return (
-      <div className="inset p-5">
-        <div className="eyebrow">Deposits</div>
-        <p className="mt-2 text-sm text-slate-400">
-          This deployment has no treasury address configured, so deposits are switched off. Set{' '}
-          <span className="num text-slate-300">TREASURY_PRIVATE_KEY</span> to enable them.
+      <div className="border border-[var(--gold)]/35 bg-[var(--gold)]/[0.07] p-4">
+        <div className="display text-sm font-bold text-[var(--gold)]">
+          Deposits aren&apos;t configured on this machine
+        </div>
+        <p className="mt-2 text-xs leading-relaxed text-slate-400">
+          There&apos;s no treasury wallet set, so there is nowhere to send funds. Your local
+          config isn&apos;t in the repo — <span className="num text-slate-300">.env.local</span> is
+          gitignored, so a fresh clone never has one.
+        </p>
+        <div className="mt-3 border border-white/[0.07] bg-black/40 p-3">
+          <div className="num text-[11px] leading-relaxed text-slate-300">
+            cp .env.example .env.local
+            <br />
+            <span className="text-slate-500"># then set one of:</span>
+            <br />
+            TREASURY_PRIVATE_KEY=0x…
+            <br />
+            TREASURY_ADDRESS=0x…
+          </div>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+          The private key is needed to buy tickets and pay withdrawals. The address alone is
+          enough to accept deposits. Restart the dev server after editing — env changes are read
+          at boot.
         </p>
       </div>
     );

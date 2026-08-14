@@ -7,7 +7,6 @@ import { useJackpot, usePlayer, useLobby } from '@/lib/hooks';
 import { useSound } from '@/lib/audio/SoundProvider';
 import { Nav } from '@/components/Nav';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
-import { DepositPanel } from '@/components/wallet/DepositPanel';
 import { RaceView } from '@/components/race/RaceView';
 import { Matchmaking } from '@/components/race/Matchmaking';
 import { Results } from '@/components/race/Results';
@@ -130,7 +129,11 @@ export default function PlayPage() {
   }, [joinRace]);
 
   // ── Gates ────────────────────────────────────────────────────────────────
-  if (!wallet.ready) {
+  // Spin only while a previous session is still being restored. `settled`
+  // is false on the server and on the first client render, so this branch
+  // hydrates cleanly, and it is timeout-bounded so a stalled reconnect
+  // falls through to the connect screen instead of hanging here.
+  if (!wallet.isConnected && !wallet.settled) {
     return (
       <>
         <Nav />
@@ -147,7 +150,7 @@ export default function PlayPage() {
     <>
       <Nav profile={profile} />
 
-      <main className="mx-auto max-w-6xl px-4 pb-16 pt-8 sm:px-5">
+      <main className="mx-auto max-w-6xl px-3 pb-16 pt-6 sm:px-5 sm:pt-8">
         {error && (
           <div className="panel mb-5 border-[var(--danger)]/35 p-4 text-sm text-[#ffb3c1]">
             {error}
@@ -165,7 +168,20 @@ export default function PlayPage() {
           </div>
         )}
 
-        {phase === 'ready' && (
+        {/*
+          Funding is its own screen, not a panel tucked under a disabled button.
+          A player who arrived here to race and can't is in a different situation
+          from one who is choosing when to start, and pretending otherwise buries
+          the one action that unblocks them.
+        */}
+        {phase === 'ready' && !canAfford && (
+          <NotEnoughBalance
+            balanceUnits={profile?.balance.creditsUnits ?? '0'}
+            entryFeeUnits={jackpot?.economy.entryFeeUnits ?? '0'}
+          />
+        )}
+
+        {phase === 'ready' && canAfford && (
           <ReadyRoom
             canAfford={canAfford}
             joining={joining}
@@ -178,8 +194,6 @@ export default function PlayPage() {
             shardsPerTicket={profile?.vault.shardsPerTicket ?? 5}
             name={wallet.name}
             setName={wallet.setName}
-            jackpot={jackpot}
-            onDeposited={refresh}
           />
         )}
 
@@ -241,6 +255,72 @@ function ConnectGate() {
   );
 }
 
+/**
+ * Not enough balance to take a seat.
+ *
+ * Deliberately a prompt and a link, NOT a deposit form.
+ *
+ * Money movement lives in one place — the vault — for the same reason a bank
+ * does not let you open an account at the ATM: a form that takes real USDC is
+ * worth having exactly one of, reviewed once, rather than a second copy inside a
+ * game screen that has to be kept in step with it. A player who lands here is
+ * told what is missing, and sent to the one screen that can fix it.
+ */
+function NotEnoughBalance({
+  balanceUnits,
+  entryFeeUnits,
+}: {
+  balanceUnits: string;
+  entryFeeUnits: string;
+}) {
+  const short = BigInt(entryFeeUnits || '0') - BigInt(balanceUnits || '0');
+
+  return (
+    <div className="mx-auto max-w-md">
+      <div className="panel panel-lit rise p-6 text-center sm:p-8">
+        <div className="chip chip-gold mx-auto mb-5">Not enough balance</div>
+
+        <h1 className="display text-2xl leading-tight sm:text-3xl">
+          Your vault can&apos;t cover a seat
+        </h1>
+
+        <div className="mt-6 flex items-center justify-center gap-4 sm:gap-8">
+          <div>
+            <div className="stat-label">In vault</div>
+            <div className="num mt-1 text-xl font-bold text-slate-300 sm:text-2xl">
+              {formatUsdc(balanceUnits)}
+            </div>
+          </div>
+          <div className="text-2xl text-slate-700">→</div>
+          <div>
+            <div className="stat-label">One seat</div>
+            <div className="num mt-1 text-xl font-bold text-[var(--cyan)] sm:text-2xl">
+              {formatUsdc(entryFeeUnits)}
+            </div>
+          </div>
+        </div>
+
+        {short > 0n && (
+          <p className="mt-5 text-sm text-[var(--gold)]">
+            Add <span className="num font-bold">{formatUsdc(short)}</span> and you&apos;re racing.
+          </p>
+        )}
+
+        <Link href="/vault" className="slab slab-accent mt-7 w-full px-6 py-4 text-base">
+          Go to vault to deposit
+        </Link>
+
+        <Link
+          href="/games"
+          className="mt-4 inline-block text-xs text-slate-500 hover:text-slate-300"
+        >
+          ← Back to the arcade
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 function Verifying() {
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center gap-5 text-center">
@@ -264,7 +344,7 @@ function Verifying() {
  */
 function ReadyRoom({
   canAfford, joining, onJoin, entryFeeUnits, fullPotUnits, balanceUnits, entriesLeft,
-  shards, shardsPerTicket, name, setName, jackpot, onDeposited,
+  shards, shardsPerTicket, name, setName,
 }: {
   canAfford: boolean;
   joining: boolean;
@@ -277,14 +357,18 @@ function ReadyRoom({
   shardsPerTicket: number;
   name: string;
   setName: (n: string) => void;
-  jackpot: ReturnType<typeof useJackpot>['jackpot'];
-  onDeposited: () => void;
 }) {
   return (
     <div className="mx-auto grid max-w-5xl gap-5 lg:grid-cols-[1.25fr_1fr]">
-      <div className="panel panel-lit rise p-7">
-        <div className="chip chip-live mb-4">Ready room</div>
-        <h1 className="display text-3xl leading-tight sm:text-4xl">Take a seat</h1>
+      <div className="panel panel-lit rise p-5 sm:p-7">
+        {/* The cabinet you're sitting at, and the way back to the floor. */}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="chip chip-live">Rally Vault · Ready room</div>
+          <Link href="/games" className="text-xs text-slate-500 hover:text-slate-300">
+            ← Arcade
+          </Link>
+        </div>
+        <h1 className="display text-2xl leading-tight sm:text-4xl">Take a seat</h1>
         <p className="mt-3 max-w-md leading-relaxed text-slate-400">
           One stake, five seats, seventy seconds. Highest score takes every shard on the table —
           and it is score, not finishing order, that decides it.
@@ -343,7 +427,7 @@ function ReadyRoom({
       </div>
 
       <div className="space-y-5">
-        <div className="panel panel-lit panel-gold rise p-6" style={{ animationDelay: '80ms' }}>
+        <div className="panel panel-lit panel-gold rise p-4 sm:p-6" style={{ animationDelay: '80ms' }}>
           <div className="flex items-baseline justify-between">
             <div className="eyebrow">Shard vault</div>
             <span className="num text-sm font-bold text-[var(--gold)]">
@@ -372,14 +456,22 @@ function ReadyRoom({
           </div>
         </div>
 
-        <div className="panel rise p-6" style={{ animationDelay: '140ms' }}>
-          <div className="mb-4 flex items-baseline justify-between">
-            <div className="eyebrow">Balance</div>
+        <div className="panel rise p-4 sm:p-6" style={{ animationDelay: '140ms' }}>
+          <div className="flex items-baseline justify-between">
+            <div className="eyebrow">In vault</div>
             <span className="num text-lg font-bold text-[var(--accent)]">
               {formatUsdc(balanceUnits)}
             </span>
           </div>
-          <DepositPanel jackpot={jackpot} onCredited={onDeposited} />
+          <p className="mt-2 text-xs text-slate-500">
+            {entriesLeft} {entriesLeft === 1 ? 'seat' : 'seats'} at this stake.
+          </p>
+          <Link
+            href="/vault"
+            className="btn btn-ghost mt-4 w-full py-2.5 text-xs"
+          >
+            Manage vault
+          </Link>
         </div>
       </div>
     </div>

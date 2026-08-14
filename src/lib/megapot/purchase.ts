@@ -33,6 +33,25 @@ export type PurchaseResult = {
   recipient: `0x${string}`;
   ticketPrice: bigint;
   count: number;
+  /**
+   * True when nothing was broadcast.
+   *
+   * Load bearing all the way to the UI. A simulated purchase has a synthetic
+   * hash no explorer can find and mints no ticket, so anything that renders a
+   * ticket has to be able to say so — showing a dead BaseScan link next to a
+   * ticket that does not exist is the single most misleading thing this app
+   * could do.
+   */
+  simulated: boolean;
+  /**
+   * The ticket ids the protocol assigned, when we can know them.
+   *
+   * `buyTickets` returns them, but a broadcast `writeContract` resolves to a
+   * transaction hash rather than the call's return value — so they come from
+   * simulating the same call immediately before sending it. Empty on a dry run,
+   * because no ticket was ever created to have an id.
+   */
+  ticketIds: string[];
 };
 
 export class SettlementInProgressError extends Error {
@@ -147,11 +166,28 @@ async function ensureAllowance(spender: `0x${string}`, total: bigint) {
 
   if (allowance >= total) return;
 
+  /**
+   * Approve a batch's worth, not this purchase's worth.
+   *
+   * Approving exactly `total` meant the allowance hit zero after every single
+   * purchase, so every ticket cost two transactions and two lots of gas for the
+   * rest of time. Topping up to a run of purchases makes the approve amortise —
+   * one approval, then many single-transaction buys.
+   *
+   * Deliberately NOT an infinite approval. This is a hot wallet on a server; a
+   * bounded allowance means a compromise of the spender contract can take a
+   * known, small amount rather than the treasury's entire balance. It is capped
+   * by the balance too, so it can never approve more than exists.
+   */
+  const APPROVE_BATCH = 50n;
+  const target = total * APPROVE_BATCH;
+  const amount = target > balance ? balance : target;
+
   const hash = await wallet.writeContract({
     address: CONTRACTS.usdc,
     abi: ERC20_ABI,
     functionName: 'approve',
-    args: [spender, total],
+    args: [spender, amount < total ? total : amount],
   });
   await publicClient.waitForTransactionReceipt({ hash });
 }
@@ -180,6 +216,7 @@ export async function buyRandomTickets(
   const args = [BigInt(count), recipient, referrers, split, SOURCE_TAG] as unknown[];
 
   let txHash: `0x${string}`;
+  let ticketIds: string[] = [];
 
   if (DRY_RUN) {
     txHash = await simulateOnly(
@@ -195,12 +232,36 @@ export async function buyRandomTickets(
   } else {
     // The random buyer pulls USDC itself, so it is the spender here.
     await ensureAllowance(CONTRACTS.randomTicketBuyer, total);
-    txHash = await wallet.writeContract({
+
+    const call = {
+      account,
       address: CONTRACTS.randomTicketBuyer,
       abi: RANDOM_TICKET_BUYER_ABI,
-      functionName: 'buyTickets',
+      functionName: 'buyTickets' as const,
       args,
-    });
+    };
+
+    /**
+     * Simulate first, purely to capture the return value.
+     *
+     * `buyTickets` returns the ticket ids it minted, but `writeContract`
+     * resolves to a transaction hash — the return value is unreachable from a
+     * broadcast. Simulating the identical call against the same block gives us
+     * the ids to store, and doubles as a last check that the arguments are
+     * valid before spending anything.
+     *
+     * If the simulation fails we still broadcast: the ids are a nicety, and
+     * refusing to buy a ticket somebody won because we couldn't pre-read its
+     * number would be the wrong trade.
+     */
+    try {
+      const { result } = await publicClient.simulateContract(call);
+      if (Array.isArray(result)) ticketIds = (result as bigint[]).map((id) => id.toString());
+    } catch {
+      // Non-fatal — see above.
+    }
+
+    txHash = await wallet.writeContract(call);
     await publicClient.waitForTransactionReceipt({ hash: txHash });
   }
 
@@ -210,6 +271,8 @@ export async function buyRandomTickets(
     recipient,
     ticketPrice: drawing.ticketPrice,
     count,
+    simulated: DRY_RUN,
+    ticketIds,
   };
 }
 

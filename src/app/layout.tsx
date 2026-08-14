@@ -31,9 +31,9 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Rally Vault — five racers, one real jackpot ticket',
+  title: 'Mega Arcade — play for a real jackpot ticket',
   description:
-    'Five racers stake a fifth of a Megapot ticket each. Highest score takes the whole pot — and the pot buys a real lottery ticket minted straight to your wallet on Base.',
+    'Multiplayer arcade games where five players stake a fifth of a Megapot lottery ticket each and one takes the whole pot. Win enough and a real ticket mints straight to your wallet on Base.',
 };
 
 export const viewport: Viewport = {

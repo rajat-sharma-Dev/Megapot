@@ -4,14 +4,12 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ConnectButton } from './wallet/ConnectButton';
 import { SoundToggle } from './SoundToggle';
-import { ShardMeter } from './ShardMeter';
+import { VaultChip } from './VaultChip';
 import { useSound } from '@/lib/audio/SoundProvider';
-import { formatUsdc } from '@/lib/format';
 import type { PlayerProfile } from '@/lib/hooks';
 
 const LINKS = [
-  { href: '/', label: 'Home' },
-  { href: '/play', label: 'Play' },
+  { href: '/games', label: 'Arcade' },
   { href: '/vault', label: 'Vault' },
 ];
 
@@ -28,7 +26,7 @@ export function Nav({ profile }: { profile?: PlayerProfile | null }) {
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#04060c]/80 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-6xl items-center gap-5 px-4 sm:px-5">
+      <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-3 sm:gap-5 sm:px-5">
         <Link
           href="/"
           onClick={() => play('click')}
@@ -36,7 +34,7 @@ export function Nav({ profile }: { profile?: PlayerProfile | null }) {
         >
           <VaultMark />
           <span className="display text-[15px] font-bold tracking-tight">
-            RALLY<span className="text-[var(--accent)]">VAULT</span>
+            MEGA<span className="text-[var(--gold)]">ARCADE</span>
           </span>
         </Link>
 
@@ -60,31 +58,8 @@ export function Nav({ profile }: { profile?: PlayerProfile | null }) {
           })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          {profile && (
-            <Link
-              href="/vault"
-              className="hidden items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 transition-colors hover:bg-white/[0.08] md:flex"
-            >
-              <div className="leading-tight">
-                <div className="stat-label">Balance</div>
-                <div className="num text-sm font-bold text-[var(--accent)]">
-                  {formatUsdc(profile.balance.creditsUnits)}
-                </div>
-              </div>
-              <div className="h-7 w-px bg-white/10" />
-              <div className="leading-tight">
-                <div className="stat-label">Shards</div>
-                <div className="mt-1 w-16">
-                  <ShardMeter
-                    shards={profile.vault.shards}
-                    perTicket={profile.vault.shardsPerTicket}
-                    size="sm"
-                  />
-                </div>
-              </div>
-            </Link>
-          )}
+        <div className="ml-auto flex min-w-0 items-center gap-1.5 sm:gap-3">
+          <VaultChip profile={profile} />
 
           <SoundToggle />
           <ConnectButton />

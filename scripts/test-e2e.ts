@@ -146,12 +146,29 @@ async function joinLobby(address: string, name: string) {
   return res.json;
 }
 
+/**
+ * Keep a stand-in solvent.
+ *
+ * The faucet grants a fixed number of entries, and several groups play dozens of
+ * races, so a long loop will eventually run the wallet dry and fail with a 402
+ * that says nothing about the thing under test. Topping up on demand keeps a
+ * funding artefact from masquerading as a product bug.
+ *
+ * Deliberately only used by `playRace`. The "running out of balance" group
+ * drives `/api/lobby/join` directly precisely so it CAN go broke.
+ */
+async function ensureFunded(address: string) {
+  const { json } = await api('GET', `/api/player?address=${address}`);
+  if (json?.ok && json.balance.entriesAffordable < 1) await fund(address);
+}
+
 /** Play one solo race end-to-end and return everything the assertions need. */
 async function playRace(
   address: string,
   name: string,
   opts: { skill?: 'rookie' | 'steady' | 'sharp'; quitAtProgress?: number } = {},
 ) {
+  await ensureFunded(address);
   const joined = await joinLobby(address, name);
   const lobby = await waitForLock(joined.lobby.id, address);
 
@@ -868,11 +885,14 @@ async function main() {
   group('Pages');
   {
     for (const [route, markers] of [
-      // The attract screen: the cabinet chrome, the one control, and the
-      // fold-independent content all have to be in the server-rendered HTML.
-      ['/', ['Press Start', 'CABINET 01', 'SPECIFICATION', 'marquee-track']],
-      ['/play', ['Rally']],
-      ['/vault', ['Rally']],
+      // Everything a visitor needs before any JavaScript runs has to be in the
+      // server-rendered HTML.
+      // The arcade title screen: brand, the one control, and the live marquee.
+      ['/', ['MEGA ARCADE', 'Select a game', 'marquee-track']],
+      // The floor: the live cabinet and at least one locked one.
+      ['/games', ['Pick a cabinet', 'Rally Vault', 'Coming soon']],
+      ['/play', ['Mega Arcade']],
+      ['/vault', ['Mega Arcade']],
     ] as const) {
       const res = await fetch(`${BASE}${route}`);
       const html = await res.text();

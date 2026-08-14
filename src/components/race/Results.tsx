@@ -78,7 +78,7 @@ export function Results({
     <div className="mx-auto max-w-3xl space-y-5 pb-10">
       {/* ── Headline ────────────────────────────────────────────────── */}
       <div
-        className={`panel rise relative overflow-hidden p-8 text-center ${
+        className={`panel rise relative overflow-hidden p-5 text-center sm:p-8 ${
           iWon ? 'win-halo' : ''
         } ${!iWon && margin > 0 && margin <= 12 ? 'shake' : ''}`}
       >
@@ -139,7 +139,7 @@ export function Results({
       {/* ── Ticket minted ───────────────────────────────────────────── */}
       {ticketsMinted > 0 && (
         <div
-          className="panel panel-lit panel-gold rise p-7 text-center"
+          className="panel panel-lit panel-gold rise p-5 text-center sm:p-7"
           style={{ animationDelay: '90ms' }}
         >
           <div className="display text-2xl text-[var(--gold)] glow-gold">
@@ -151,19 +151,35 @@ export function Results({
           </p>
           {settlement.txHashes.length > 0 && (
             <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {settlement.txHashes.map((h) => (
-                <a
-                  key={h}
-                  href={`${explorerBase}/tx/${h}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="chip chip-gold hover:underline"
-                >
-                  {h.slice(0, 10)}…
-                </a>
-              ))}
+              {settlement.txHashes.map((h) =>
+                // A simulated purchase carries a synthetic `0xdd1f…` hash that no
+                // explorer can resolve. Linking it would tell the player their
+                // ticket is real and then let BaseScan contradict us.
+                isSimulatedHash(h) ? (
+                  <span key={h} className="chip">
+                    simulated — not broadcast
+                  </span>
+                ) : (
+                  <a
+                    key={h}
+                    href={`${explorerBase}/tx/${h}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="chip chip-gold hover:underline"
+                  >
+                    {h.slice(0, 10)}…
+                  </a>
+                ),
+              )}
             </div>
           )}
+
+          <Link
+            href="/vault"
+            className="mt-4 inline-block text-xs text-[var(--gold)] hover:underline"
+          >
+            See your ticket numbers in the vault →
+          </Link>
         </div>
       )}
 
@@ -175,7 +191,7 @@ export function Results({
       )}
 
       {/* ── Standings ───────────────────────────────────────────────── */}
-      <div className="panel rise p-6 sm:p-7" style={{ animationDelay: '140ms' }}>
+      <div className="panel rise p-4 sm:p-7" style={{ animationDelay: '140ms' }}>
         <div className="mb-4 flex items-center justify-between">
           <div className="chip chip-violet">Final standings</div>
           <span className="text-xs text-slate-500">ranked by score, not by finish</span>
@@ -223,7 +239,7 @@ export function Results({
 
       {/* ── Your breakdown ──────────────────────────────────────────── */}
       {breakdown && (
-        <div className="panel rise p-6 sm:p-7" style={{ animationDelay: '200ms' }}>
+        <div className="panel rise p-4 sm:p-7" style={{ animationDelay: '200ms' }}>
           <div className="chip mb-5">Your score sheet</div>
           <div className="divide-y divide-white/[0.06]">
             {rows.map((row) => (
@@ -269,7 +285,7 @@ export function Results({
 
       {/* ── Vault progress ──────────────────────────────────────────── */}
       {profile && (
-        <div className="panel rise p-6" style={{ animationDelay: '260ms' }}>
+        <div className="panel rise p-4 sm:p-6" style={{ animationDelay: '260ms' }}>
           <div className="flex items-center justify-between">
             <div className="eyebrow">Shard vault</div>
             <span className="num text-sm font-bold text-[var(--gold)]">
@@ -306,6 +322,17 @@ export function Results({
       </div>
     </div>
   );
+}
+
+/**
+ * The dry-run marker from `syntheticHash` in `lib/megapot/purchase.ts`.
+ *
+ * Matched on the prefix rather than threaded through the settlement record,
+ * because the record is persisted and old rows predate the flag — a hash that
+ * starts with the marker was never broadcast, whenever it was written.
+ */
+function isSimulatedHash(hash: string): boolean {
+  return hash.toLowerCase().startsWith('0xdd1f');
 }
 
 function suffix(n: number): string {

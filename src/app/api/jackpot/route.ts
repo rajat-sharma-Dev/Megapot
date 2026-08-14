@@ -5,6 +5,7 @@ import { getTreasuryAddress } from '@/lib/megapot/client';
 import { getHouseFloat } from '@/lib/db/store';
 import { entryFeeUnits, minDepositUnits, SEATS_PER_RACE, SHARDS_PER_TICKET } from '@/lib/vault/economy';
 import { advanceLobbies } from '@/lib/vault/lobby';
+import { isDryRun } from '@/lib/megapot/purchase';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,6 +34,13 @@ export async function GET() {
       usdcAddress: CONTRACTS.usdc,
       treasuryAddress: treasury,
       depositsEnabled: !!treasury,
+      /**
+       * True when ticket purchases are simulated rather than broadcast. The UI
+       * has to know: a dry-run ticket has no numbers and no explorer entry, and
+       * a player who wins one deserves to be told why rather than discovering it
+       * on BaseScan.
+       */
+      dryRun: isDryRun(),
 
       drawingId: d.drawingId.toString(),
       prizePool: d.prizePool.toString(),

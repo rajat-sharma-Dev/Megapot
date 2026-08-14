@@ -333,6 +333,70 @@ export function useRecentWinners(pollMs = 30_000) {
   return { recent: data, reload: load };
 }
 
+// ─── Tickets ────────────────────────────────────────────────────────────────
+
+export type TicketNumbers = { normals: number[]; bonusball: number };
+
+export type TicketRow = {
+  id: string;
+  txHash: string;
+  drawingId: string;
+  count: number;
+  lobbyId: string | null;
+  network: string;
+  createdAt: string;
+  simulated: boolean;
+  ticketIds: string[];
+  /** The actual lottery numbers, when the Data API knows them. */
+  numbers: TicketNumbers[];
+  /** Null for a simulated purchase — there is no transaction to open. */
+  explorerUrl: string | null;
+};
+
+export type TicketsFeed = {
+  ok: boolean;
+  local: TicketRow[];
+  totalTickets: number;
+  realTickets: number;
+  simulatedTickets: number;
+  dryRun: boolean;
+  onchainError: string | null;
+};
+
+/**
+ * A wallet's tickets, with their numbers.
+ *
+ * Separate from `usePlayer` because it joins Megapot's Data API, which is slower
+ * and allowed to fail — a ticket list that can't load should not take the whole
+ * profile down with it.
+ */
+export function useTickets(address: string | null, pollMs = 0) {
+  const [data, setData] = useState<TicketsFeed | null>(null);
+
+  const load = useCallback(async () => {
+    if (!address) {
+      setData(null);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/tickets?address=${address}`);
+      const json = await res.json();
+      if (json.ok) setData(json);
+    } catch {
+      // Keep the last good list rather than blanking it.
+    }
+  }, [address]);
+
+  useEffect(() => {
+    load();
+    if (!pollMs) return;
+    const id = setInterval(load, pollMs);
+    return () => clearInterval(id);
+  }, [load, pollMs]);
+
+  return { tickets: data, refresh: load };
+}
+
 /** A 1Hz clock shared by every countdown on a page, so eight of them cost one timer. */
 export function useNow(intervalMs = 1000) {
   const [now, setNow] = useState(() => Date.now());

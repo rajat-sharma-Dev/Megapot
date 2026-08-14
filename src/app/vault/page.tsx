@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useWallet } from '@/lib/wallet/useWallet';
-import { useJackpot, usePlayer } from '@/lib/hooks';
+import { useJackpot, usePlayer, useTickets } from '@/lib/hooks';
 import { Nav } from '@/components/Nav';
 import { ConnectButton } from '@/components/wallet/ConnectButton';
 import { DepositPanel } from '@/components/wallet/DepositPanel';
@@ -10,6 +10,7 @@ import { WithdrawPanel } from '@/components/wallet/WithdrawPanel';
 import { VaultCard } from '@/components/ShardMeter';
 import { ClaimWinnings } from '@/components/wallet/ClaimWinnings';
 import { formatUsdc } from '@/lib/format';
+import type { TicketRow } from '@/lib/hooks';
 import { shortAddress } from '@/lib/wallet/useWallet';
 
 /**
@@ -24,8 +25,13 @@ export default function VaultPage() {
   const wallet = useWallet();
   const { jackpot } = useJackpot(30_000);
   const { profile, refresh } = usePlayer(wallet.address, 20_000);
+  const { tickets } = useTickets(wallet.address, 30_000);
 
-  if (!wallet.ready) {
+  // Spin only while a previous session is still being restored. `settled`
+  // is false on the server and on the first client render, so this branch
+  // hydrates cleanly, and it is timeout-bounded so a stalled reconnect
+  // falls through to the connect screen instead of hanging here.
+  if (!wallet.isConnected && !wallet.settled) {
     return (
       <>
         <Nav />
@@ -61,11 +67,11 @@ export default function VaultPage() {
     <>
       <Nav profile={profile} />
 
-      <main className="mx-auto max-w-6xl px-4 pb-20 pt-8 sm:px-5">
+      <main className="mx-auto max-w-6xl px-3 pb-20 pt-6 sm:px-5 sm:pt-8">
         <div className="rise mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <div className="eyebrow">Your vault</div>
-            <h1 className="display mt-1 text-3xl sm:text-4xl">{profile?.player.name ?? '—'}</h1>
+            <h1 className="display mt-1 text-2xl sm:text-4xl">{profile?.player.name ?? '—'}</h1>
             <div className="num mt-1 text-xs text-slate-500">{shortAddress(wallet.address)}</div>
           </div>
           <Link href="/play" className="btn btn-primary px-6 py-3">
@@ -76,7 +82,7 @@ export default function VaultPage() {
         <div className="grid gap-5 lg:grid-cols-[1fr_1.15fr]">
           {/* ── Money ─────────────────────────────────────────────────── */}
           <div className="space-y-5">
-            <div className="panel panel-lit rise p-6">
+            <div className="panel panel-lit rise p-4 sm:p-6">
               <div className="flex items-baseline justify-between">
                 <div className="eyebrow">Spendable balance</div>
                 <span className="num text-xs text-slate-500">
@@ -109,7 +115,7 @@ export default function VaultPage() {
               />
             )}
 
-            <div className="panel rise p-6">
+            <div className="panel rise p-4 sm:p-6">
               <div className="eyebrow mb-4">Career</div>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-2">
                 <Stat label="Races" value={profile?.player.racesPlayed ?? 0} />
@@ -136,43 +142,47 @@ export default function VaultPage() {
             {/* Renders nothing until this wallet has actually won something. */}
             <ClaimWinnings onClaimed={refresh} />
 
-            <div className="panel panel-lit panel-gold rise p-6">
-              <div className="mb-4 flex items-center justify-between">
+            <div className="panel panel-lit panel-gold rise p-4 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <div className="chip chip-gold">Megapot tickets</div>
                 <span className="num text-xs text-slate-500">
-                  {profile?.tickets.reduce((s, t) => s + t.count, 0) ?? 0} total
+                  {tickets?.totalTickets ?? 0} total
                 </span>
               </div>
 
-              {!profile?.tickets.length ? (
+              {/*
+                Simulation is disclosed here, not discovered on BaseScan. A
+                dry-run purchase broadcasts nothing, so it has no numbers and no
+                transaction — a player who wins one is owed the reason.
+              */}
+              {tickets?.dryRun && (
+                <div className="mb-4 border border-[var(--gold)]/35 bg-[var(--gold)]/[0.07] p-3">
+                  <div className="display text-xs font-bold text-[var(--gold)]">
+                    Simulation mode
+                  </div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                    Purchases are being simulated against live chain state, not broadcast, so these
+                    tickets have no numbers and no transaction to open. Set{' '}
+                    <span className="num">MEGAPOT_DRY_RUN=false</span> with a funded treasury to buy
+                    real ones.
+                  </p>
+                </div>
+              )}
+
+              {!tickets?.local.length ? (
                 <p className="py-6 text-center text-sm text-slate-500">
-                  No tickets yet. Fill five shards and one mints itself.
+                  No tickets yet. Win a pot and one mints to your wallet.
                 </p>
               ) : (
                 <div className="stagger space-y-2">
-                  {profile.tickets.slice(0, 8).map((t) => (
-                    <a
-                      key={t.id}
-                      href={t.explorerUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-3 rounded-xl border border-[var(--gold)]/25 bg-[var(--gold)]/[0.05] px-3.5 py-2.5 transition-colors hover:bg-[var(--gold)]/[0.1]"
-                    >
-                      <span className="text-lg">🎟</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="display text-sm font-semibold text-[var(--gold)]">
-                          {t.count} ticket{t.count === 1 ? '' : 's'} · round {t.drawingId}
-                        </div>
-                        <div className="num truncate text-[11px] text-slate-500">{t.txHash}</div>
-                      </div>
-                      <span className="text-xs text-slate-600">↗</span>
-                    </a>
+                  {tickets.local.slice(0, 8).map((t) => (
+                    <TicketRowView key={t.id} ticket={t} />
                   ))}
                 </div>
               )}
             </div>
 
-            <div className="panel rise p-6">
+            <div className="panel rise p-4 sm:p-6">
               <div className="mb-4 flex items-center justify-between">
                 <div className="chip">Recent races</div>
                 <span className="text-xs text-slate-500">{wins} won</span>
@@ -208,7 +218,7 @@ export default function VaultPage() {
               )}
             </div>
 
-            <div className="panel rise p-6">
+            <div className="panel rise p-4 sm:p-6">
               <div className="chip mb-4">Ledger</div>
               {!profile?.ledger.length ? (
                 <p className="py-6 text-center text-sm text-slate-500">Nothing has moved yet.</p>
@@ -257,6 +267,73 @@ export default function VaultPage() {
         </div>
       </main>
     </>
+  );
+}
+
+/**
+ * One ticket.
+ *
+ * The numbers are the ticket. Everything else — the hash, the round, which pot
+ * paid for it — is provenance, so the numbers lead and the rest is small. When
+ * there are no numbers to show, the row says why instead of leaving a gap.
+ */
+function TicketRowView({ ticket }: { ticket: TicketRow }) {
+  const body = (
+    <>
+      <span className="shrink-0 text-lg">🎟</span>
+      <div className="min-w-0 flex-1">
+        {ticket.numbers.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {ticket.numbers[0].normals.map((n, i) => (
+              <span
+                key={i}
+                className="num grid h-6 w-6 place-items-center rounded-sm bg-white/10 text-[11px] font-bold text-slate-100"
+              >
+                {n}
+              </span>
+            ))}
+            <span className="num grid h-6 w-6 place-items-center rounded-full bg-[var(--gold)] text-[11px] font-bold text-black">
+              {ticket.numbers[0].bonusball}
+            </span>
+            {ticket.count > 1 && (
+              <span className="ml-1 text-[10px] text-slate-500">+{ticket.count - 1} more</span>
+            )}
+          </div>
+        ) : (
+          <div className="display text-sm font-semibold text-[var(--gold)]">
+            {ticket.count} ticket{ticket.count === 1 ? '' : 's'}
+            {ticket.simulated && (
+              <span className="ml-2 text-[10px] font-normal text-slate-500">
+                simulated — no numbers assigned
+              </span>
+            )}
+          </div>
+        )}
+        <div className="num mt-1 truncate text-[10px] text-slate-600">
+          round {ticket.drawingId}
+          {ticket.ticketIds.length > 0 && ` · #${ticket.ticketIds[0]}`}
+        </div>
+      </div>
+      {ticket.explorerUrl ? (
+        <span className="shrink-0 text-xs text-slate-600">↗</span>
+      ) : (
+        <span className="chip shrink-0 text-[9px]">sim</span>
+      )}
+    </>
+  );
+
+  const className =
+    'flex items-center gap-3 border border-[var(--gold)]/25 bg-[var(--gold)]/[0.05] px-3.5 py-2.5 transition-colors' +
+    (ticket.explorerUrl ? ' hover:bg-[var(--gold)]/[0.1]' : '');
+
+  // No link when there is no transaction — a dead explorer tab reads as a
+  // broken promise about a ticket that was never bought.
+  return ticket.explorerUrl ? (
+    <a href={ticket.explorerUrl} target="_blank" rel="noreferrer" className={className}>
+      {body}
+    </a>
+  ) : (
+    <div className={className}>{body}</div>
   );
 }
 

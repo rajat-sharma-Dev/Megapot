@@ -518,7 +518,7 @@ export function RaceView({
     <div className="relative">
       <div
         ref={wrapRef}
-        className="no-touch-scroll relative h-[74vh] min-h-[460px] w-full overflow-hidden rounded-2xl border border-white/10 bg-black"
+        className="no-touch-scroll relative h-[68vh] min-h-[380px] w-full overflow-hidden rounded-sm border border-white/10 bg-black sm:h-[74vh] sm:min-h-[460px]"
         onPointerMove={onPointer}
         onPointerDown={onPointer}
         onPointerUp={() => { touchRef.current = null; touchBoostRef.current = false; }}
@@ -530,7 +530,7 @@ export function RaceView({
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-3 sm:p-4">
           <div className="hud-card">
             <div className="stat-label">Track pos</div>
-            <div className="num text-2xl font-bold leading-none text-white">
+            <div className="num text-xl font-bold leading-none text-white sm:text-2xl">
               {hud.position}
               <span className="text-sm text-slate-500">/{hud.total}</span>
             </div>
@@ -546,7 +546,7 @@ export function RaceView({
           <div className="flex items-start gap-2">
             <div className="hud-card text-right">
               <div className="stat-label">Banked</div>
-              <div className="num text-2xl font-bold leading-none text-white">{hud.runScore}</div>
+              <div className="num text-xl font-bold leading-none text-white sm:text-2xl">{hud.runScore}</div>
               {/* The Orb is carried, not banked — the HUD has to say which. */}
               {hud.hasOrb && (
                 <div className="num mt-0.5 text-[11px] font-bold text-[var(--gold)]">
@@ -694,7 +694,7 @@ export function RaceView({
             </div>
             <div
               key={countdown}
-              className="pop display num text-8xl font-bold text-[var(--accent)] glow-accent"
+              className="pop display num text-6xl font-bold text-[var(--accent)] glow-accent sm:text-8xl"
             >
               {countdown}
             </div>

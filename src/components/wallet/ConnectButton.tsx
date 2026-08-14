@@ -33,11 +33,32 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
     };
   }, [open]);
 
-  if (!w.ready) {
-    return <div className="h-10 w-36 animate-pulse rounded-xl bg-white/[0.05]" />;
+  /**
+   * Connection state is not readable until after mount, and pretending
+   * otherwise is a hydration error.
+   *
+   * wagmi restores a session from localStorage on the client, so the server
+   * renders "disconnected" while the client's very first render can already be
+   * "connected" — React sees two different trees and throws. Every branch below
+   * is therefore gated on `ready`, which is false during SSR *and* during the
+   * first client render, so both sides start from the identical connect button
+   * and only diverge once an effect has run.
+   *
+   * The fallback is the connect button rather than a skeleton, deliberately: a
+   * connect button shown a frame early is harmless, whereas a placeholder that
+   * outlives its condition hides the one control that lets anybody in — which is
+   * exactly what happened when this gated on a flag that never resolved.
+   */
+  if (w.ready && !w.isConnected && w.isReconnecting) {
+    return (
+      <div className="flex h-9 items-center gap-2 rounded-sm border border-white/10 bg-white/[0.04] px-3">
+        <span className="h-1.5 w-1.5 rounded-full bg-slate-500 pulse-dot" />
+        <span className="display text-[11px] tracking-wider text-slate-500">Restoring…</span>
+      </div>
+    );
   }
 
-  if (w.isConnected && w.wrongNetwork) {
+  if (w.ready && w.isConnected && w.wrongNetwork) {
     return (
       <button
         onClick={() => {
@@ -45,14 +66,14 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
           w.switchToTarget();
         }}
         disabled={w.switching}
-        className="btn btn-danger px-4 py-2 text-sm"
+        className="btn btn-danger px-3 py-1.5 text-xs"
       >
         {w.switching ? 'Switching…' : `Switch to ${w.chainLabel}`}
       </button>
     );
   }
 
-  if (w.isConnected && w.address) {
+  if (w.ready && w.isConnected && w.address) {
     return (
       <div className="relative" ref={ref}>
         <button
@@ -60,14 +81,14 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
             play('click');
             setOpen((o) => !o);
           }}
-          className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 transition-colors hover:bg-white/[0.08]"
+          className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/[0.04] px-2.5 py-1.5 transition-colors hover:bg-white/[0.08]"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
           <div className="text-left leading-tight">
             {!compact && (
-              <div className="display text-xs font-semibold text-slate-200">{w.name}</div>
+              <div className="display text-[11px] font-semibold text-slate-200">{w.name}</div>
             )}
-            <div className="num text-[11px] text-slate-500">{shortAddress(w.address)}</div>
+            <div className="num text-[10px] text-slate-500">{shortAddress(w.address)}</div>
           </div>
         </button>
 
@@ -110,7 +131,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
           play('click');
           setOpen((o) => !o);
         }}
-        className="btn btn-primary px-4 py-2 text-sm"
+        className="btn btn-primary px-3 py-1.5 text-xs"
       >
         Connect wallet
       </button>

@@ -138,6 +138,16 @@ export type TicketRecord = {
   /** The lobby whose pot paid for it. */
   lobbyId: string | null;
   network: string;
+  /**
+   * True when MEGAPOT_DRY_RUN was on and nothing was broadcast.
+   *
+   * Recorded per ticket rather than read from the environment at display time,
+   * because the flag can be flipped between a purchase and someone looking at
+   * it — and a simulated ticket must never later present itself as real.
+   */
+  simulated: boolean;
+  /** Protocol-assigned ticket ids. Empty for a simulated purchase. */
+  ticketIds: string[];
   createdAt: string;
 };
 

@@ -42,10 +42,27 @@ export function useWallet() {
   /** Guards every read of localStorage so the server render and the first client
    * render agree; without it the name flashes in and React complains. */
   const [hydrated, setHydrated] = useState(false);
+  /**
+   * True once we're willing to say "no wallet is connected".
+   *
+   * A restore attempt is worth waiting a moment for, so a returning player
+   * doesn't see the connect screen flash before their session comes back. But
+   * only a moment: gating the UI on a reconnect flag that never resolves is
+   * exactly how the connect button ended up hidden behind a permanent skeleton
+   * and `/play` span forever. The timeout makes that failure mode impossible
+   * regardless of what the wallet layer does.
+   */
+  const [settled, setSettled] = useState(false);
 
   useEffect(() => {
     setHydrated(true);
+    const t = setTimeout(() => setSettled(true), 2000);
+    return () => clearTimeout(t);
   }, []);
+
+  useEffect(() => {
+    if (!isReconnecting) setSettled(true);
+  }, [isReconnecting]);
 
   useEffect(() => {
     if (!address) {
@@ -167,7 +184,24 @@ export function useWallet() {
 
     name,
     setName,
-    ready: hydrated && !isReconnecting,
+    /**
+     * True once an effect has run, i.e. once client-only state can be trusted.
+     *
+     * Deliberately NOT folded together with `settled`. Anything whose markup
+     * differs between connected and disconnected must gate on this, because it
+     * is false during SSR *and* during the first client render — which is the
+     * only way both sides produce the same tree. wagmi restores sessions from
+     * localStorage, so without this the server renders a connect button while
+     * the client renders an account chip, and React throws a hydration error.
+     */
+    ready: hydrated,
+    /**
+     * True once we know whether a previous session came back — either because
+     * the reconnect finished, or because it took too long to keep waiting.
+     * Use this for "still working it out" spinners, never for markup that has to
+     * match the server.
+     */
+    settled,
   };
 }
 

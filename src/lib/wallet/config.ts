@@ -56,9 +56,23 @@ export const wagmiConfig = createConfig({
     [base.id]: http(NETWORK === 'mainnet' ? RPC_URL : 'https://mainnet.base.org'),
     [baseSepolia.id]: http(NETWORK === 'mainnet' ? 'https://sepolia.base.org' : RPC_URL),
   },
-  // Defer connector hydration to the client so the server-rendered HTML doesn't
-  // claim a connection state the browser then contradicts.
-  ssr: true,
+  /**
+   * `ssr` is deliberately OFF.
+   *
+   * It looks like the right switch for a Next app and it is not, unless you also
+   * pass `initialState` to `WagmiProvider` (via `cookieStorage` +
+   * `cookieToInitialState`). `ssr: true` tells wagmi to defer hydration and wait
+   * for connection state the server is supposed to supply — and when that state
+   * never arrives, the account status can sit in `reconnecting` indefinitely.
+   *
+   * That is not theoretical: it froze the connect button behind a permanent
+   * loading skeleton and left `/play` spinning forever, because both gated on a
+   * `ready` flag derived from `isReconnecting`. With `ssr` off, wagmi reads
+   * localStorage on mount and resolves immediately.
+   *
+   * If server-rendered connection state is ever wanted, turn this back on AND
+   * wire `initialState` in the same change — never one without the other.
+   */
 });
 
 declare module 'wagmi' {

@@ -477,6 +477,8 @@ export async function mintFromVault(
         count: res.count,
         lobbyId,
         network: NETWORK,
+        simulated: res.simulated,
+        ticketIds: res.ticketIds,
       });
     }
 

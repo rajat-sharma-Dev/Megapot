@@ -89,7 +89,13 @@ export async function GET(req: Request) {
       progress: ticketProgress(vault, drawing.ticketPrice),
       ticketPriceUnits: drawing.ticketPrice.toString(),
     },
-    tickets: tickets.map((t) => ({ ...t, explorerUrl: txUrl(t.txHash) })),
+    tickets: tickets.map((t) => ({
+      ...t,
+      simulated: !!t.simulated,
+      ticketIds: Array.isArray(t.ticketIds) ? t.ticketIds : [],
+      // A simulated purchase broadcast nothing, so there is no transaction to link.
+      explorerUrl: t.simulated ? null : txUrl(t.txHash),
+    })),
     ledger: ledger.map((e) => ({ ...e, explorerUrl: e.txHash ? txUrl(e.txHash) : null })),
     history,
   });

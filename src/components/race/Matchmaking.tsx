@@ -52,7 +52,7 @@ export function Matchmaking({ lobby, onCancel }: { lobby: LobbyView; onCancel?: 
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
           {lobby.state === 'open' ? 'Finding racers' : 'Grid is set'}
         </div>
-        <h1 className="display text-3xl sm:text-4xl">
+        <h1 className="display text-2xl sm:text-4xl">
           {lobby.state === 'open' ? 'Filling the grid' : 'Starting…'}
         </h1>
         <p className="mt-2 text-slate-400">
@@ -67,7 +67,7 @@ export function Matchmaking({ lobby, onCancel }: { lobby: LobbyView; onCancel?: 
         </p>
       </div>
 
-      <div className="panel panel-lit rise p-6" style={{ animationDelay: '80ms' }}>
+      <div className="panel panel-lit rise p-4 sm:p-6" style={{ animationDelay: '80ms' }}>
         <div className="mb-5">
           <PotMeter
             potUnits={lobby.potUnits}

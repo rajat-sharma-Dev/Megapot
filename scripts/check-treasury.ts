@@ -125,12 +125,22 @@ async function main() {
     });
     ok('a real ticket purchase simulates cleanly — a win will mint.');
   } catch (err) {
-    const msg = String((err as Error).message).split('\n')[0];
-    if (msg.includes('allowance')) {
+    /**
+     * Match against the WHOLE message, not its first line.
+     *
+     * viem formats a revert as "The contract function … reverted with the
+     * following reason:" and puts the actual reason on the next line — so
+     * splitting on the first newline throws away the only part that says what
+     * went wrong, and reported a healthy treasury as broken.
+     */
+    const full = String((err as Error).message);
+    const reason = full.split('\n').find((l) => l.trim() && !l.includes('reverted with')) ?? full;
+
+    if (/allowance/i.test(full)) {
       // Expected before the first buy; the app approves automatically.
       ok('purchase reverts only on allowance, which the app approves on first buy.');
     } else {
-      bad(`purchase would fail: ${msg}`);
+      bad(`purchase would fail: ${reason.trim()}`);
       fatal = true;
     }
   }

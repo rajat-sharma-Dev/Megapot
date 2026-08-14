@@ -78,7 +78,7 @@ export default function PlayPage() {
       const res = await fetch('/api/lobby/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: wallet.address, name: wallet.name }),
+        body: JSON.stringify({ address: wallet.address, name: wallet.displayName }),
       });
       const json = await res.json();
       if (!json.ok) throw new Error(json.error ?? 'Could not join a race');
@@ -93,7 +93,7 @@ export default function PlayPage() {
     } finally {
       setJoining(false);
     }
-  }, [wallet.address, wallet.name, refresh, play]);
+  }, [wallet.address, wallet.displayName, refresh, play]);
 
   // ── Submit ───────────────────────────────────────────────────────────────
   const onFinish = useCallback(

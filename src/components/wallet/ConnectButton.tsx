@@ -209,7 +209,7 @@ export function ConnectButton({ compact }: { compact?: boolean }) {
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)] pulse-dot" />
           <div className="text-left leading-tight">
             {!compact && (
-              <div className="display text-[11px] font-semibold text-slate-200">{w.name}</div>
+              <div className="display text-[11px] font-semibold text-slate-200">{w.displayName}</div>
             )}
             <div className="num text-[10px] text-slate-500">{shortAddress(w.address)}</div>
           </div>

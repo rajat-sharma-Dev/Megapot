@@ -155,7 +155,7 @@ export default function Arcade() {
               {wallet.isConnected && wallet.address ? (
                 <>
                   <span className="display font-bold tracking-wider text-[var(--accent)]">
-                    {profile?.player.name ?? wallet.name}
+                    {profile?.player.name ?? wallet.displayName}
                   </span>
                   <span className="num text-slate-600">{shortAddress(wallet.address)}</span>
                 </>

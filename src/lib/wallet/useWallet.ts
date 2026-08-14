@@ -76,19 +76,37 @@ export function useWallet() {
     }
   }, [address]);
 
+  /**
+   * Let the field be empty while typing.
+   *
+   * The previous version collapsed an empty value to "Racer" on every
+   * keystroke, so backspacing to the start made the name spring back and the
+   * field became impossible to clear. What the player types is now stored
+   * verbatim (capped at 20 characters); the fallback is applied only when the
+   * name is actually *used*, which is what `displayName` is for.
+   */
   const setName = useCallback(
     (next: string) => {
-      const trimmed = next.trim().slice(0, 20) || 'Racer';
-      setNameState(trimmed);
+      const raw = next.slice(0, 20);
+      setNameState(raw);
       if (!address) return;
       try {
-        localStorage.setItem(NAME_KEY(address), trimmed);
+        localStorage.setItem(NAME_KEY(address), raw);
       } catch {
         // A browser with storage disabled just gets a per-session name.
       }
     },
     [address],
   );
+
+  /**
+   * The name to actually race under.
+   *
+   * Empty is a legitimate editing state but not a legitimate racer name, so the
+   * fallback lives here rather than in the input. Anything that submits a name
+   * — joining a lobby, the profile readout — uses this.
+   */
+  const displayName = name.trim() || (address ? defaultName(address) : 'Racer');
 
   /**
    * The player's own USDC, on the target chain — what they can deposit from.
@@ -184,6 +202,7 @@ export function useWallet() {
 
     name,
     setName,
+    displayName,
     /**
      * True once an effect has run, i.e. once client-only state can be trusted.
      *

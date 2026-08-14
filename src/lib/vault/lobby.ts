@@ -21,7 +21,7 @@ import 'server-only';
 import { randomBytes } from 'crypto';
 import {
   getOrCreatePlayer, updatePlayer, adjustBalance, getHouseFloat, adjustHouseFloat,
-  createLobby, getLobby, findJoinableLobby, listPendingLobbies, save,
+  createLobby, getLobby, claimSeat, listPendingLobbies, save,
   getOrbRollover, bumpOrbRollover, recordTicket, toUnits, normalizeAddress,
   type Lobby, type SeatRecord, type Player, type StandingRow,
 } from '../db/store';
@@ -132,14 +132,35 @@ export async function joinLobby(address: string, name?: string): Promise<JoinRes
     if (have < feeUnits) throw new InsufficientFundsError(feeUnits, have);
 
     const nowMs = Date.now();
-    let lobby = await findJoinableLobby(nowMs);
 
-    // Never seat the same wallet twice in one lobby: you would be staking
-    // against yourself and the pot would be meaningless.
-    if (lobby && lobby.seats.some((s) => s.id === normalizeAddress(address))) lobby = null;
+    /**
+     * Take a seat atomically.
+     *
+     * `claimSeat` finds an open lobby and writes the seat in one conditional
+     * update, so two players joining in the same instant cannot be handed the
+     * same seat. The in-process lock around this function is still useful on the
+     * single-process file store, but it is meaningless across serverless
+     * instances — the database has to settle that race, not the runtime.
+     */
+    const seatTemplate = {
+      kind: 'human' as const,
+      id: player.id,
+      name: player.name,
+      staked: true,
+      joinedAt: new Date(nowMs).toISOString(),
+      submittedAt: null,
+      inputs: null,
+      points: null,
+      placement: null,
+      retired: null,
+      breakdown: null,
+    };
 
-    if (!lobby) {
-      lobby = await createLobby({
+    let claimed = await claimSeat(player.id, seatTemplate);
+
+    if (!claimed) {
+      // Nothing joinable — open a lobby of our own and take seat 0.
+      const fresh = await createLobby({
         id: randomBytes(12).toString('hex'),
         seed: randomBytes(4).readUInt32BE(0),
         state: 'open',
@@ -150,13 +171,16 @@ export async function joinLobby(address: string, name?: string): Promise<JoinRes
         ticketPriceUnits: drawing.ticketPrice.toString(),
         drawingId: drawing.drawingId.toString(),
         rolloverCount: await getOrbRollover(),
-        seats: Array.from({ length: SEATS_PER_RACE }, (_, i) => emptySeat(i)),
+        seats: Array.from({ length: SEATS_PER_RACE }, (_, i) =>
+          i === 0 ? { ...seatTemplate, index: 0 } : emptySeat(i),
+        ),
         settlement: null,
       });
+      claimed = { lobby: fresh, seatIndex: 0 };
     }
 
-    const seat = lobby.seats.find((s) => s.kind === 'empty');
-    if (!seat) throw new Error('That lobby filled up — try again.');
+    const lobby = claimed.lobby;
+    const seat = lobby.seats[claimed.seatIndex];
 
     // The fee is charged against the lobby's fee, not today's, so a player who
     // joined before a price change pays what they were quoted.
@@ -172,12 +196,6 @@ export async function joinLobby(address: string, name?: string): Promise<JoinRes
       note: `Seat ${seat.index + 1} in lobby ${lobby.id.slice(0, 8)}`,
     });
 
-    seat.kind = 'human';
-    seat.id = player.id;
-    seat.name = player.name;
-    seat.staked = true;
-    seat.joinedAt = new Date().toISOString();
-
     await updatePlayer(player.id, {
       racesPlayed: player.racesPlayed + 1,
       lifetimeWageredUnits: (toUnits(player.lifetimeWageredUnits) + lobbyFee).toString(),
@@ -187,8 +205,6 @@ export async function joinLobby(address: string, name?: string): Promise<JoinRes
     // sitting out the rest of its fill window.
     if (!lobby.seats.some((s) => s.kind === 'empty')) {
       await lockLobby(lobby);
-    } else {
-      await save();
     }
 
     return {
@@ -240,7 +256,7 @@ export async function lockLobby(lobby: Lobby): Promise<Lobby> {
 
   lobby.state = 'locked';
   lobby.submitDeadline = new Date(Date.now() + SUBMIT_WINDOW_MS).toISOString();
-  await save();
+  await save(lobby);
   return lobby;
 }
 
@@ -273,7 +289,7 @@ export async function submitRun(
 
     seat.inputs = inputs;
     seat.submittedAt = new Date().toISOString();
-    await save();
+    await save(lobby);
 
     const everyoneIn = lobby.seats
       .filter((s) => s.kind === 'human')
@@ -436,7 +452,7 @@ export async function settleLobby(lobby: Lobby): Promise<Lobby> {
   // Input logs are ~4,000 numbers each and have done their job.
   for (const seat of lobby.seats) seat.inputs = null;
 
-  await save();
+  await save(lobby);
   return lobby;
 }
 
@@ -457,28 +473,48 @@ export async function mintFromPot(
   lobbyId: string | null,
 ): Promise<{ tickets: number; txHashes: string[]; error: string | null }> {
   const player = await getOrCreatePlayer(playerId);
-  const { tickets, remainderUnits } = potToTickets(potUnits, ticketPriceUnits);
+  const { tickets, spentUnits } = potToTickets(potUnits, ticketPriceUnits);
 
-  /** Give back whatever tickets could not absorb. */
-  const refund = async (units: bigint, note: string) => {
-    if (units <= 0n) return;
-    await adjustBalance({
-      playerId: player.id,
-      field: 'creditsUnits',
-      deltaUnits: units,
-      kind: 'win',
-      lobbyId,
-      note,
-    });
-  };
+  /**
+   * Credit the pot first, then spend it on tickets.
+   *
+   * Two ledger rows — "won a pot", then "bought a ticket" — which is both a
+   * complete audit trail and exactly how it reads to a player. An earlier
+   * version bought the ticket and only credited the remainder, which meant a pot
+   * that converted cleanly produced NO ledger entry at all: the money left and
+   * became a ticket with nothing recording it.
+   *
+   * It also makes the failure path automatic. If the purchase throws, the credit
+   * has already landed, so the winner simply keeps the money — no refund logic,
+   * and no window where the pot exists in neither place.
+   */
+  await adjustBalance({
+    playerId: player.id,
+    field: 'creditsUnits',
+    deltaUnits: potUnits,
+    kind: 'win',
+    lobbyId,
+    note: `Won a pot of ${potUnits} base units`,
+  });
 
   if (tickets <= 0) {
-    await refund(potUnits, 'Pot won — too small for a whole ticket, returned to your balance');
+    // Too small for a whole ticket; it stays in the balance, which is where it
+    // already is. Nothing further to do.
     return { tickets: 0, txHashes: [], error: null };
   }
 
   try {
     const results = await buyTicketsFor(player.id as `0x${string}`, tickets);
+
+    await adjustBalance({
+      playerId: player.id,
+      field: 'creditsUnits',
+      deltaUnits: -spentUnits,
+      kind: 'ticket',
+      txHash: results[0]?.txHash ?? null,
+      lobbyId,
+      note: `${tickets} Megapot ticket${tickets === 1 ? '' : 's'} minted to your wallet`,
+    });
 
     for (const [i, res] of results.entries()) {
       await recordTicket({
@@ -497,13 +533,9 @@ export async function mintFromPot(
     const after = await getOrCreatePlayer(player.id);
     await updatePlayer(player.id, { ticketsEarned: after.ticketsEarned + tickets });
 
-    await refund(remainderUnits, 'Pot remainder returned to your balance');
-
     return { tickets, txHashes: results.map((r) => r.txHash), error: null };
   } catch (err) {
-    // The purchase failed, so the winner keeps the money instead of the ticket.
-    await refund(potUnits, 'Pot won — ticket purchase failed, refunded to your balance');
-
+    // The credit already happened, so the winner keeps the money.
     return {
       tickets: 0,
       txHashes: [],

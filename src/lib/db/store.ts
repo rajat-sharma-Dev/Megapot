@@ -17,6 +17,7 @@ import path from 'path';
 import type { InputLog } from '../game/replay';
 import type { BotSkill } from '../game/bots';
 import type { ScoreBreakdown } from '../points/scoring';
+import * as pg from './pg';
 
 // ─── Shapes ─────────────────────────────────────────────────────────────────
 
@@ -326,11 +327,11 @@ async function persist(): Promise<void> {
 }
 
 /** Flush pending mutations. Callers that mutate a Lobby in place call this. */
-export const save = persist;
+const file_save = persist;
 
 // ─── Players ────────────────────────────────────────────────────────────────
 
-export async function getOrCreatePlayer(address: string, name?: string): Promise<Player> {
+async function file_getOrCreatePlayer(address: string, name?: string): Promise<Player> {
   const db = await load();
   const id = normalizeAddress(address);
 
@@ -345,12 +346,12 @@ export async function getOrCreatePlayer(address: string, name?: string): Promise
   return db.players[id];
 }
 
-export async function getPlayer(address: string): Promise<Player | null> {
+async function file_getPlayer(address: string): Promise<Player | null> {
   const db = await load();
   return db.players[normalizeAddress(address)] ?? null;
 }
 
-export async function updatePlayer(id: string, patch: Partial<Player>): Promise<Player> {
+async function file_updatePlayer(id: string, patch: Partial<Player>): Promise<Player> {
   const db = await load();
   const key = normalizeAddress(id);
   const existing = db.players[key];
@@ -360,7 +361,7 @@ export async function updatePlayer(id: string, patch: Partial<Player>): Promise<
   return db.players[key];
 }
 
-export async function listPlayers(): Promise<Player[]> {
+async function file_listPlayers(): Promise<Player[]> {
   const db = await load();
   return Object.values(db.players);
 }
@@ -373,7 +374,7 @@ export async function listPlayers(): Promise<Player[]> {
  * happen. `field` is retained from when there were two balances; everything
  * moves through `creditsUnits` now.
  */
-export async function adjustBalance(opts: {
+async function file_adjustBalance(opts: {
   playerId: string;
   field: 'creditsUnits' | 'vaultUnits';
   deltaUnits: bigint;
@@ -413,7 +414,7 @@ export async function adjustBalance(opts: {
   return p;
 }
 
-export async function listLedger(playerId?: string, limit = 50): Promise<LedgerEntry[]> {
+async function file_listLedger(playerId?: string, limit = 50): Promise<LedgerEntry[]> {
   const db = await load();
   const all = [...db.ledger].reverse();
   const filtered = playerId ? all.filter((e) => e.playerId === normalizeAddress(playerId)) : all;
@@ -427,7 +428,7 @@ export async function listLedger(playerId?: string, limit = 50): Promise<LedgerE
  * to be idempotent against a replayed request. The transaction hash is the
  * natural idempotency key.
  */
-export async function ledgerHasTx(txHash: string): Promise<boolean> {
+async function file_ledgerHasTx(txHash: string): Promise<boolean> {
   const db = await load();
   const h = txHash.toLowerCase();
   return db.ledger.some((e) => e.txHash?.toLowerCase() === h);
@@ -435,7 +436,7 @@ export async function ledgerHasTx(txHash: string): Promise<boolean> {
 
 // ─── House float ────────────────────────────────────────────────────────────
 
-export async function getHouseFloat(): Promise<bigint> {
+async function file_getHouseFloat(): Promise<bigint> {
   return toUnits((await load()).houseFloatUnits);
 }
 
@@ -443,7 +444,7 @@ export async function getHouseFloat(): Promise<bigint> {
  * Move the house float. Refuses to go negative, which is what stops the house
  * from staking seats it cannot cover.
  */
-export async function adjustHouseFloat(deltaUnits: bigint): Promise<bigint> {
+async function file_adjustHouseFloat(deltaUnits: bigint): Promise<bigint> {
   const db = await load();
   const next = toUnits(db.houseFloatUnits) + deltaUnits;
   if (next < 0n) throw new Error('House float cannot cover this stake');
@@ -454,14 +455,14 @@ export async function adjustHouseFloat(deltaUnits: bigint): Promise<bigint> {
 
 // ─── Lobbies ────────────────────────────────────────────────────────────────
 
-export async function createLobby(lobby: Lobby): Promise<Lobby> {
+async function file_createLobby(lobby: Lobby): Promise<Lobby> {
   const db = await load();
   db.lobbies[lobby.id] = lobby;
   await persist();
   return lobby;
 }
 
-export async function getLobby(id: string): Promise<Lobby | null> {
+async function file_getLobby(id: string): Promise<Lobby | null> {
   const db = await load();
   return db.lobbies[id] ?? null;
 }
@@ -471,7 +472,7 @@ export async function getLobby(id: string): Promise<Lobby | null> {
  * hasn't already been sitting past its fill deadline. Oldest first, so players
  * pile into the lobby closest to starting rather than each opening their own.
  */
-export async function findJoinableLobby(nowMs: number): Promise<Lobby | null> {
+async function file_findJoinableLobby(nowMs: number): Promise<Lobby | null> {
   const db = await load();
   return (
     Object.values(db.lobbies)
@@ -486,14 +487,14 @@ export async function findJoinableLobby(nowMs: number): Promise<Lobby | null> {
 }
 
 /** Lobbies that are due to be locked or settled, so a request can advance them. */
-export async function listPendingLobbies(): Promise<Lobby[]> {
+async function file_listPendingLobbies(): Promise<Lobby[]> {
   const db = await load();
   return Object.values(db.lobbies)
     .filter((l) => l.state !== 'settled')
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-export async function listLobbiesForPlayer(playerId: string, limit = 20): Promise<Lobby[]> {
+async function file_listLobbiesForPlayer(playerId: string, limit = 20): Promise<Lobby[]> {
   const db = await load();
   const id = normalizeAddress(playerId);
   return Object.values(db.lobbies)
@@ -502,7 +503,7 @@ export async function listLobbiesForPlayer(playerId: string, limit = 20): Promis
     .slice(0, limit);
 }
 
-export async function listRecentSettledLobbies(limit = 12): Promise<Lobby[]> {
+async function file_listRecentSettledLobbies(limit = 12): Promise<Lobby[]> {
   const db = await load();
   return Object.values(db.lobbies)
     .filter((l) => l.state === 'settled')
@@ -512,11 +513,11 @@ export async function listRecentSettledLobbies(limit = 12): Promise<Lobby[]> {
 
 // ─── Orb rollover ───────────────────────────────────────────────────────────
 
-export async function getOrbRollover(): Promise<number> {
+async function file_getOrbRollover(): Promise<number> {
   return (await load()).orbRollover;
 }
 
-export async function bumpOrbRollover(claimed: boolean): Promise<number> {
+async function file_bumpOrbRollover(claimed: boolean): Promise<number> {
   const db = await load();
   db.orbRollover = claimed ? 0 : db.orbRollover + 1;
   await persist();
@@ -525,7 +526,7 @@ export async function bumpOrbRollover(claimed: boolean): Promise<number> {
 
 // ─── Tickets ────────────────────────────────────────────────────────────────
 
-export async function recordTicket(t: Omit<TicketRecord, 'createdAt'>): Promise<TicketRecord> {
+async function file_recordTicket(t: Omit<TicketRecord, 'createdAt'>): Promise<TicketRecord> {
   const db = await load();
   const rec: TicketRecord = { ...t, playerId: normalizeAddress(t.playerId), createdAt: now() };
   db.tickets.push(rec);
@@ -533,7 +534,7 @@ export async function recordTicket(t: Omit<TicketRecord, 'createdAt'>): Promise<
   return rec;
 }
 
-export async function listTickets(playerId?: string): Promise<TicketRecord[]> {
+async function file_listTickets(playerId?: string): Promise<TicketRecord[]> {
   const db = await load();
   const all = [...db.tickets].reverse();
   return playerId ? all.filter((t) => t.playerId === normalizeAddress(playerId)) : all;
@@ -542,7 +543,104 @@ export async function listTickets(playerId?: string): Promise<TicketRecord[]> {
 // ─── Test support ───────────────────────────────────────────────────────────
 
 /** Wipe everything. Used by the end-to-end harness; never called by the app. */
-export async function __resetForTests(): Promise<void> {
+async function file___resetForTests(): Promise<void> {
   setCached(structuredClone(EMPTY));
   await persist();
 }
+
+
+// ─── Backend selection ──────────────────────────────────────────────────────
+
+/**
+ * One store, two backends.
+ *
+ * The JSON file is the default and exists so a clean checkout runs with no
+ * credentials at all — clone, `npm run dev`, play. It is also unusable on any
+ * real deployment: Vercel's filesystem is read-only, and even in /tmp each
+ * instance keeps its own copy, so a balance credited on one request disappears
+ * on the next.
+ *
+ * So the moment `DATABASE_URL` exists we use Postgres instead. Nothing above
+ * this line knows which is active, and the choice is made per call rather than
+ * cached at import time, so a build that has no database at build time and one
+ * at runtime behaves correctly.
+ */
+// Named `pgEnabled`, not `usePg` — anything starting with `use` is treated as a
+// React hook by the lint rules, and these are plain server functions.
+const pgEnabled = () => pg.hasPostgres();
+
+export const save = async (lobby?: Lobby): Promise<void> => {
+  // The file store writes everything at once; Postgres needs to know what
+  // changed. Callers that mutate a lobby pass it.
+  if (pgEnabled()) {
+    if (lobby) await pg.saveLobby(lobby);
+    return;
+  }
+  await file_save();
+};
+
+export const getOrCreatePlayer = (a: string, n?: string) =>
+  pgEnabled() ? pg.getOrCreatePlayer(a, n) : file_getOrCreatePlayer(a, n);
+export const getPlayer = (a: string) => (pgEnabled() ? pg.getPlayer(a) : file_getPlayer(a));
+export const updatePlayer = (id: string, patch: Partial<Player>) =>
+  pgEnabled() ? pg.updatePlayer(id, patch) : file_updatePlayer(id, patch);
+export const listPlayers = () => (pgEnabled() ? pg.listPlayers() : file_listPlayers());
+
+export const adjustBalance = (o: Parameters<typeof file_adjustBalance>[0]) =>
+  pgEnabled() ? pg.adjustBalance(o) : file_adjustBalance(o);
+export const listLedger = (p?: string, l = 50) =>
+  pgEnabled() ? pg.listLedger(p, l) : file_listLedger(p, l);
+export const ledgerHasTx = (tx: string) => (pgEnabled() ? pg.ledgerHasTx(tx) : file_ledgerHasTx(tx));
+
+export const getHouseFloat = () => (pgEnabled() ? pg.getHouseFloat() : file_getHouseFloat());
+export const adjustHouseFloat = (d: bigint) =>
+  pgEnabled() ? pg.adjustHouseFloat(d) : file_adjustHouseFloat(d);
+export const getOrbRollover = () => (pgEnabled() ? pg.getOrbRollover() : file_getOrbRollover());
+export const bumpOrbRollover = (c: boolean) =>
+  pgEnabled() ? pg.bumpOrbRollover(c) : file_bumpOrbRollover(c);
+
+export const createLobby = (l: Lobby) => (pgEnabled() ? pg.createLobby(l) : file_createLobby(l));
+export const getLobby = (id: string) => (pgEnabled() ? pg.getLobby(id) : file_getLobby(id));
+export const findJoinableLobby = (n: number) =>
+  pgEnabled() ? pg.findJoinableLobby(n) : file_findJoinableLobby(n);
+export const listPendingLobbies = () =>
+  pgEnabled() ? pg.listPendingLobbies() : file_listPendingLobbies();
+export const listLobbiesForPlayer = (p: string, l = 20) =>
+  pgEnabled() ? pg.listLobbiesForPlayer(p, l) : file_listLobbiesForPlayer(p, l);
+export const listRecentSettledLobbies = (l = 12) =>
+  pgEnabled() ? pg.listRecentSettledLobbies(l) : file_listRecentSettledLobbies(l);
+
+/**
+ * Claim a seat without a read-modify-write.
+ *
+ * On Postgres this is a single conditional UPDATE, so two players joining in the
+ * same instant cannot be handed the same seat — the loser's WHERE stops
+ * matching. The file store has no such guarantee and does not need one: it is
+ * single-process, and its callers already hold an in-process lock.
+ *
+ * Returns null when nothing is joinable, meaning "open a new lobby".
+ */
+export const claimSeat = async (
+  playerId: string,
+  seat: Omit<SeatRecord, 'index'>,
+): Promise<{ lobby: Lobby; seatIndex: number } | null> => {
+  if (pgEnabled()) return pg.claimSeat(playerId, seat);
+
+  const lobby = await file_findJoinableLobby(Date.now());
+  if (!lobby) return null;
+  if (lobby.seats.some((s) => s.id === normalizeAddress(playerId))) return null;
+
+  const free = lobby.seats.find((s) => s.kind === 'empty');
+  if (!free) return null;
+
+  Object.assign(free, seat, { index: free.index });
+  await file_save();
+  return { lobby, seatIndex: free.index };
+};
+
+export const recordTicket = (t: Omit<TicketRecord, 'createdAt'>) =>
+  pgEnabled() ? pg.recordTicket(t) : file_recordTicket(t);
+export const listTickets = (p?: string) => (pgEnabled() ? pg.listTickets(p) : file_listTickets(p));
+
+export const __resetForTests = () =>
+  pgEnabled() ? pg.__resetForTests() : file___resetForTests();

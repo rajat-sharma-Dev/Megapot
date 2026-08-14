@@ -19,12 +19,13 @@ import { base, baseSepolia } from 'wagmi/chains';
 import { injected } from 'wagmi/connectors/injected';
 import { coinbaseWallet } from 'wagmi/connectors/coinbaseWallet';
 import { NETWORK, CHAIN_ID } from '../megapot/addresses';
+import { envStr } from '../env';
 
 export const TARGET_CHAIN = NETWORK === 'mainnet' ? base : baseSepolia;
 export const TARGET_CHAIN_ID = CHAIN_ID;
 
 const RPC_URL =
-  process.env.NEXT_PUBLIC_RPC_URL ||
+  envStr(process.env.NEXT_PUBLIC_RPC_URL) ||
   (NETWORK === 'mainnet' ? 'https://mainnet.base.org' : 'https://sepolia.base.org');
 
 /**

@@ -1,0 +1,8 @@
+# Vercel builds from source, so local build output and state are pure upload
+# weight — .next-e2e alone was 271MB, which is what aborted the first deploy.
+node_modules
+.next
+.next-e2e
+.next-verify
+.data
+.data-e2e

@@ -21,6 +21,8 @@ import { TICK_DT, FUEL_MAX, FUEL_START, FUEL_SECONDS_PER_TANK } from '../src/lib
 import { BOT_PROFILES, type BotSkill } from '../src/lib/game/bots';
 import { resolvePot, rankSeats, wonFromBehind, type PotSeat } from '../src/lib/vault/pot';
 import { entryFeeUnits, potToTickets, SEATS_PER_RACE } from '../src/lib/vault/economy';
+import { envStr, envBool } from '../src/lib/env';
+import { NETWORK, CONTRACTS, CHAIN_ID } from '../src/lib/megapot/addresses';
 
 /**
  * Replay one seat's log through the authoritative lobby simulation — exactly
@@ -607,6 +609,40 @@ group('Pot conversion');
     BigInt(minted) * price + refunded === staked,
     `nothing is created or destroyed across 20 pots (${minted} tickets + ${refunded} refunded)`,
   );
+}
+
+// ── Environment parsing ─────────────────────────────────────────────────────
+/**
+ * These exist because a real deployment shipped broken on exactly this: values
+ * copied out of a `.env` file keep the quotes dotenv would have stripped, and
+ * `MEGAPOT_DRY_RUN="false"` is not `'false'`. That silently mints simulated
+ * tickets — the worst kind of failure, because it looks like it worked.
+ */
+{
+  check(envStr('"testnet"') === 'testnet', 'a double-quoted value loses its quotes');
+  check(envStr("'testnet'") === 'testnet', 'a single-quoted value loses its quotes');
+  check(envStr('  testnet  ') === 'testnet', 'whitespace is trimmed');
+  check(envStr('') === undefined, 'an empty value reads as unset, not as an empty string');
+  check(envStr(undefined) === undefined, 'an unset value stays unset');
+  check(envStr('"0x1234"')  === '0x1234', 'a quoted hex key is usable');
+
+  check(envBool('"false"', true) === false, 'a QUOTED false is false — the bug that shipped');
+  check(envBool('false', true) === false, 'a bare false is false');
+  check(envBool('true', false) === true, 'a bare true is true');
+  check(envBool('"true"', false) === true, 'a quoted true is true');
+  check(envBool(undefined, true) === true, 'an unset flag takes the fallback');
+  check(envBool('banana', true) === true, 'an unrecognised flag takes the fallback, not truthiness');
+  check(envBool('banana', false) === false, 'and the fallback is honoured in both directions');
+}
+
+{
+  /**
+   * The network must never resolve to undefined addresses, and an unrecognised
+   * value must land on TESTNET — guessing mainnet here spends real money.
+   */
+  check(NETWORK === 'testnet' || NETWORK === 'mainnet', `NETWORK is a real network (${NETWORK})`);
+  check(!!CONTRACTS && !!CONTRACTS.jackpot, 'the jackpot address is defined');
+  check(typeof CHAIN_ID === 'number' && CHAIN_ID > 0, `the chain id is real (${CHAIN_ID})`);
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────

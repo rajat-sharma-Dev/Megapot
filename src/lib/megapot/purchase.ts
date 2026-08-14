@@ -16,6 +16,7 @@ import { publicClient, getTreasuryClient, getReferrer } from './client';
 import { CONTRACTS } from './addresses';
 import { RANDOM_TICKET_BUYER_ABI, ERC20_ABI } from './abi';
 import { getCurrentDrawing, isSettling } from './drawing';
+import { envBool } from '../env';
 
 /** Referral splits are 1e18-scaled weights that must sum to EXACTLY 1e18. */
 const PRECISE_UNIT = 1_000_000_000_000_000_000n;
@@ -74,7 +75,11 @@ export class SettlementInProgressError extends Error {
  * Defaults to ON. An unset variable must never mean "spend real money" — the
  * only way to broadcast is to say so explicitly.
  */
-const DRY_RUN = process.env.MEGAPOT_DRY_RUN !== 'false';
+/**
+ * Dry run defaults ON: a deployment that forgets this var simulates rather than
+ * spending real USDC. It must be turned off *explicitly* to buy real tickets.
+ */
+const DRY_RUN = envBool(process.env.MEGAPOT_DRY_RUN, true);
 
 /** Reverts that mean "your arguments are wrong" — never acceptable, even dry. */
 const ARGUMENT_ERRORS = [

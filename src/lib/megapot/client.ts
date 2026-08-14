@@ -2,6 +2,7 @@ import { createPublicClient, createWalletClient, http, type Chain } from 'viem';
 import { base, baseSepolia } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { NETWORK } from './addresses';
+import { envStr } from '../env';
 
 export const CHAIN: Chain = NETWORK === 'mainnet' ? base : baseSepolia;
 
@@ -20,8 +21,8 @@ export const CHAIN: Chain = NETWORK === 'mainnet' ? base : baseSepolia;
  * limited but leaks nothing.
  */
 const RPC_URL =
-  process.env.RPC_URL ||
-  process.env.NEXT_PUBLIC_RPC_URL ||
+  envStr(process.env.RPC_URL) ||
+  envStr(process.env.NEXT_PUBLIC_RPC_URL) ||
   (NETWORK === 'mainnet' ? 'https://mainnet.base.org' : 'https://sepolia.base.org');
 
 /** Read-only client. Safe in the browser. */
@@ -38,7 +39,7 @@ export const publicClient = createPublicClient({
  * TREASURY_PRIVATE_KEY is not a NEXT_PUBLIC_ var and will be undefined there.
  */
 export function getTreasuryClient() {
-  const key = process.env.TREASURY_PRIVATE_KEY;
+  const key = envStr(process.env.TREASURY_PRIVATE_KEY);
   if (!key) {
     throw new Error(
       'TREASURY_PRIVATE_KEY is not set. This function is server-only — it must ' +
@@ -66,12 +67,12 @@ export function getTreasuryClient() {
  * "deposits are switched off" rather than guessing an address.
  */
 export function getTreasuryAddress(): `0x${string}` | null {
-  const key = process.env.TREASURY_PRIVATE_KEY;
+  const key = envStr(process.env.TREASURY_PRIVATE_KEY);
   if (key) {
     return privateKeyToAccount((key.startsWith('0x') ? key : `0x${key}`) as `0x${string}`)
       .address;
   }
-  const explicit = process.env.TREASURY_ADDRESS;
+  const explicit = envStr(process.env.TREASURY_ADDRESS);
   return explicit && /^0x[a-fA-F0-9]{40}$/.test(explicit)
     ? (explicit as `0x${string}`)
     : null;

@@ -32,9 +32,35 @@ export const ADDRESSES = {
   },
 } as const satisfies Record<MegapotNetwork, Record<string, `0x${string}`>>;
 
-/** The network this build targets. Flip via NEXT_PUBLIC_MEGAPOT_NETWORK. */
-export const NETWORK: MegapotNetwork =
-  (process.env.NEXT_PUBLIC_MEGAPOT_NETWORK as MegapotNetwork) ?? 'testnet';
+/**
+ * The network this build targets. Flip via NEXT_PUBLIC_MEGAPOT_NETWORK.
+ *
+ * Validated rather than cast. The previous `(env as MegapotNetwork) ?? 'testnet'`
+ * looked safe and was not: `??` only fires on null/undefined, so a value that is
+ * merely *wrong* sails straight through the cast. A quoted `"testnet"` — which is
+ * what a `.env` line copied verbatim actually contains — made `ADDRESSES[NETWORK]`
+ * undefined, and every address on it undefined with it.
+ *
+ * Quotes are stripped because dotenv strips them and `vercel env`, being fed a
+ * raw line, does not; the two must agree or the same file means different things
+ * locally and in production.
+ *
+ * An unrecognised value falls back to TESTNET, never mainnet: the failure mode of
+ * guessing wrong here is spending real USDC, so the safe default is the one where
+ * a mistake costs nothing.
+ */
+function resolveNetwork(raw: string | undefined): MegapotNetwork {
+  const v = (raw ?? '').trim().replace(/^["']|["']$/g, '');
+  if (v in CHAIN_IDS) return v as MegapotNetwork;
+  if (v) {
+    console.warn(
+      `[megapot] Ignoring unrecognised NEXT_PUBLIC_MEGAPOT_NETWORK ${JSON.stringify(v)}; using testnet.`,
+    );
+  }
+  return 'testnet';
+}
+
+export const NETWORK: MegapotNetwork = resolveNetwork(process.env.NEXT_PUBLIC_MEGAPOT_NETWORK);
 
 export const CONTRACTS = ADDRESSES[NETWORK];
 export const CHAIN_ID = CHAIN_IDS[NETWORK];

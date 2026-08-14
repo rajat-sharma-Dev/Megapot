@@ -143,6 +143,9 @@ export function DemoRace({ className = '' }: { className?: string }) {
       cameraId = leader.id;
 
       const rect = wrap.getBoundingClientRect();
+      // A collapsed or hidden container has nothing to render into.
+      if (rect.width <= 0 || rect.height <= 0) return;
+
       render({
         ctx,
         width: rect.width,

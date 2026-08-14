@@ -180,6 +180,15 @@ export type RenderOpts = {
 export function render({
   ctx, width, height, state, track, humanId, fx, dt, boosting,
 }: RenderOpts) {
+  /**
+   * Nothing to draw into a zero-sized canvas.
+   *
+   * A hidden or not-yet-laid-out element reports width 0, which makes every
+   * scaled dimension collapse and pushes some geometry negative. Bailing early
+   * is both correct and cheaper than drawing a frame nobody can see.
+   */
+  if (!(width > 0) || !(height > 0)) return;
+
   const human = state.racers.find((r) => r.id === humanId);
   // Pickups are per-racer, so hide exactly the ones this player has taken.
   const mine = state.claimedPickups.get(humanId) ?? new Set<number>();
@@ -536,7 +545,15 @@ function drawPickups(
 
     const isTrap = p.kind === 'trap';
     const color = isTrap ? COLORS.trap : COLORS.cell;
-    const r = 17 * scale + bob;
+    /**
+     * Clamped, because `bob` is an additive wobble rather than a scaled one.
+     *
+     * Every other radius here is `k * scale` and so is never negative. This one
+     * adds a bob of up to -1.6, so when the canvas has no width yet — before
+     * layout settles, or while a cabinet card is off-screen — `scale` is 0 and
+     * the radius goes negative, which makes createRadialGradient throw.
+     */
+    const r = Math.max(0.5, 17 * scale + bob);
 
     ctx.save();
     ctx.translate(px, py);

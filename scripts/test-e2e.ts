@@ -16,6 +16,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { rm, mkdir, writeFile } from 'fs/promises';
 import { readFileSync } from 'fs';
+import { neon } from '@neondatabase/serverless';
 import path from 'path';
 import { driveRace, localField } from './lib/drive';
 import { simulateLobby } from '../src/lib/game/replay';
@@ -223,6 +224,30 @@ async function main() {
   console.log('\x1b[1m═══ Rally Vault · end-to-end ═══\x1b[0m');
 
   await rm(DATA_DIR, { recursive: true, force: true });
+
+  /**
+   * Reset the database too.
+   *
+   * Deleting the data directory was enough when the only backend was a JSON
+   * file. Postgres outlives the run, so without this the suite inherits the
+   * previous run's players and balances — and assertions like "a new player
+   * starts with nothing" fail against a wallet that is already funded.
+   */
+  if (USING_POSTGRES) {
+    const url = (process.env.DATABASE_URL
+      || process.env.POSTGRES_URL
+      || readFileSync('.env.local', 'utf8').match(/^DATABASE_URL=(.+)$/m)?.[1]
+      || '').trim().replace(/^["']|["']$/g, '');
+    if (url) {
+      const db = neon(url);
+      // Tables may not exist yet on a cold database; the server creates them.
+      try {
+        await db.query('TRUNCATE players, lobbies, tickets, ledger, app_state');
+      } catch {
+        // Nothing to truncate — fine.
+      }
+    }
+  }
 
   // Seed a data file written by the previous schema, so the server has to migrate
   // it on load rather than crash on it.
@@ -967,6 +992,30 @@ main()
     await sleep(400);
     server?.kill('SIGKILL');
     await rm(DATA_DIR, { recursive: true, force: true });
+
+  /**
+   * Reset the database too.
+   *
+   * Deleting the data directory was enough when the only backend was a JSON
+   * file. Postgres outlives the run, so without this the suite inherits the
+   * previous run's players and balances — and assertions like "a new player
+   * starts with nothing" fail against a wallet that is already funded.
+   */
+  if (USING_POSTGRES) {
+    const url = (process.env.DATABASE_URL
+      || process.env.POSTGRES_URL
+      || readFileSync('.env.local', 'utf8').match(/^DATABASE_URL=(.+)$/m)?.[1]
+      || '').trim().replace(/^["']|["']$/g, '');
+    if (url) {
+      const db = neon(url);
+      // Tables may not exist yet on a cold database; the server creates them.
+      try {
+        await db.query('TRUNCATE players, lobbies, tickets, ledger, app_state');
+      } catch {
+        // Nothing to truncate — fine.
+      }
+    }
+  }
 
     console.log(
       fail === 0

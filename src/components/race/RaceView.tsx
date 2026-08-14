@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createRaceState, step, raceComplete, finalize, retire, isOut,
-  TICK_DT, FUEL_MAX, MAX_TICKS, BASE_SPEED,
+  TICK_DT, FUEL_MAX, MAX_TICKS,
   type RaceSimState, type RaceEvent,
 } from '@/lib/game/engine';
 import {
@@ -314,9 +314,9 @@ export function RaceView({
       const boosting =
         !!me && !isOut(me) && (keysRef.current.boost || touchBoostRef.current) && me.fuel > 0;
 
-      // Audio follows the car: pitch tracks speed, and the boost roar is a
-      // held loop rather than a one-shot because boost is a tank you spend.
-      if (me) engine.setEngineSpeed(me.speed / BASE_SPEED, me.stunTicks > 0);
+      // The only sustained sound in a race: a held loop rather than a one-shot,
+      // because boost is a tank you spend and the roar has to last as long as
+      // the fuel does. Nothing else drones — see the note in `sfx.ts`.
       if (boosting !== boostAudioRef.current) {
         boostAudioRef.current = boosting;
         engine.setBoost(boosting);

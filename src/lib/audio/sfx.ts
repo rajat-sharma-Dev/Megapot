@@ -2,21 +2,27 @@
  * Sound.
  *
  * Every sound in this game is synthesised at runtime by the Web Audio API —
- * there is not one audio file in the repository. That is a deliberate trade:
- * a racing game needs an engine note that tracks speed and a boost that opens up
- * when you hold it, and a sampled loop can't do either without a pile of
- * crossfades. Synthesis gives us a continuously variable engine for a few dozen
- * lines, ships nothing, and has no licensing to get wrong.
+ * there is not one audio file in the repository. Synthesis gives us a boost roar
+ * that can last exactly as long as the fuel does, ships nothing, and has no
+ * licensing to get wrong.
  *
- * Three rules the rest of the app relies on:
+ * **The race has no continuous sound bed.** Two were built and both were cut;
+ * the reasoning is at `startEngine()` and it is the most important thing in this
+ * file. What a race sounds like is punctuation over silence — pickups, hits,
+ * near misses, steals, the orb — plus the boost roar, which only happens when
+ * the player asks for it and costs them fuel.
+ *
+ * Four rules the rest of the app relies on:
  *
  *  · Nothing is created until the first user gesture. Browsers refuse to start
  *    an AudioContext without one, and a context created too early sits
  *    permanently suspended — the classic "no sound until you reload" bug.
  *  · Every call is safe before the context exists. The UI should never have to
  *    ask whether audio is ready before making a noise.
- *  · Mute is a master gain ramp, not a teardown, so muting mid-race doesn't
- *    leave a dangling engine oscillator running silently forever.
+ *  · Mute is a gain ramp, not a teardown, so muting mid-race doesn't leave a
+ *    dangling loop running silently forever.
+ *  · Effects and music are separate buses with separate switches, because people
+ *    tire of them at very different rates.
  */
 
 export type SfxName =
@@ -47,6 +53,9 @@ type Ctx = AudioContext;
 /** Fade applied when muting, long enough not to click, short enough to obey. */
 const MUTE_RAMP = 0.08;
 
+/** Music sits well under the effects — it is a bed, not a soundtrack. */
+const MUSIC_LEVEL = 0.32;
+
 export class SoundEngine {
   private ctx: Ctx | null = null;
   private master: GainNode | null = null;
@@ -56,12 +65,10 @@ export class SoundEngine {
   private muted = false;
   private volume = 0.7;
 
-  // Engine loop — a wind rush plus a sub hum. No oscillator drone; see startEngine.
-  private engineSrc: AudioBufferSourceNode | null = null;
-  private engineSub: OscillatorNode | null = null;
-  private engineSubGain: GainNode | null = null;
-  private engineGain: GainNode | null = null;
-  private engineFilter: BiquadFilterNode | null = null;
+  // There is no engine loop. See startEngine() for why.
+
+  private sfxEnabled = true;
+  private musicEnabled = true;
 
   // Boost loop
   private boostSrc: AudioBufferSourceNode | null = null;
@@ -101,11 +108,11 @@ export class SoundEngine {
       this.master.connect(this.ctx.destination);
 
       this.sfxBus = this.ctx.createGain();
-      this.sfxBus.gain.value = 1;
+      this.sfxBus.gain.value = this.sfxEnabled ? 1 : 0;
       this.sfxBus.connect(this.master);
 
       this.musicBus = this.ctx.createGain();
-      this.musicBus.gain.value = 0.32;
+      this.musicBus.gain.value = this.musicEnabled ? MUSIC_LEVEL : 0;
       this.musicBus.connect(this.master);
     }
 
@@ -129,6 +136,37 @@ export class SoundEngine {
 
   isMuted() {
     return this.muted;
+  }
+
+  /**
+   * Silence effects or music independently of each other.
+   *
+   * Separate switches rather than one mute because they fail differently: a
+   * looping music bed is the thing people get sick of on the tenth race, while
+   * the effects are the game telling you what just happened and are worth
+   * keeping. Making someone choose between all of it and none of it is what
+   * leads to all of it being off.
+   *
+   * Ramped rather than set, so toggling mid-race doesn't click.
+   */
+  setSfxEnabled(on: boolean) {
+    this.sfxEnabled = on;
+    if (!on) this.setBoost(false);
+    this.rampBus(this.sfxBus, on ? 1 : 0);
+  }
+
+  setMusicEnabled(on: boolean) {
+    this.musicEnabled = on;
+    if (!on) this.stopMusic();
+    this.rampBus(this.musicBus, on ? MUSIC_LEVEL : 0);
+  }
+
+  private rampBus(bus: GainNode | null, to: number) {
+    if (!this.ctx || !bus) return;
+    const t = this.now();
+    bus.gain.cancelScheduledValues(t);
+    bus.gain.setValueAtTime(bus.gain.value, t);
+    bus.gain.linearRampToValueAtTime(to, t + MUTE_RAMP);
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -233,7 +271,7 @@ export class SoundEngine {
   // ── One-shots ────────────────────────────────────────────────────────────
 
   play(name: SfxName, opts: { pitch?: number } = {}) {
-    if (!this.ensure() || this.muted) return;
+    if (!this.ensure() || this.muted || !this.sfxEnabled) return;
     const p = opts.pitch ?? 1;
 
     switch (name) {
@@ -354,108 +392,39 @@ export class SoundEngine {
   // ── Engine loop ──────────────────────────────────────────────────────────
 
   /**
-   * Start the continuous engine bed.
+   * There is no continuous engine bed, and that is the design.
    *
-   * This used to be a sawtooth oscillator through a resonant lowpass — a real
-   * engine note, and genuinely unpleasant. A saw drone holds a fixed pitch with
-   * a full harmonic stack sitting right in the ear's most sensitive band, so
-   * over a seventy-second race it stops reading as an engine and starts reading
-   * as a buzz you want to turn off. Pitch tracking made it worse, not better:
-   * the harmonics sweep with it and the whole thing whines.
+   * Two versions of one were tried and both were rejected in playtesting. First
+   * a sawtooth through a resonant lowpass — a real engine note, and genuinely
+   * unpleasant: a saw holds a fixed pitch with a full harmonic stack sitting in
+   * the ear's most sensitive band, so over seventy seconds it stops reading as
+   * an engine and starts reading as a buzz. Then filtered noise, a wind rush
+   * with no fundamental at all, which was the textbook fix. It was still
+   * irritating.
    *
-   * It is now a **wind rush** — filtered noise, no fundamental, nothing to lock
-   * onto — plus a sub-bass hum well below where fatigue lives. Noise conveys
-   * speed at least as well (it is what actually sells motion in racing games)
-   * and can be listened to indefinitely. It also leaves the boost roar, which is
-   * also noise but brighter and much louder, clearly distinguishable from it.
+   * The conclusion is that the timbre was never the problem: an unbroken sound
+   * held under a browser tab for seventy seconds is fatiguing whatever it is
+   * made of. So the bed is gone. What is left is punctuation — pickups, hits,
+   * near misses, steals, the orb — over silence, which makes each of them land
+   * far harder than it did when competing with a drone. The only sustained
+   * sound in a race is now the boost roar, and the player chooses when that
+   * happens and pays fuel for it.
    *
-   * Calling this twice is a no-op, so the race view can call it on every mount
-   * without bookkeeping.
+   * These three methods are kept as no-ops rather than deleted so the race view
+   * needs no conditional bookkeeping, and so the intent above survives next to
+   * the code instead of only in a commit message.
    */
   startEngine() {
-    if (!this.ensure() || this.engineSrc || !this.ctx || !this.sfxBus) return;
-    const buf = this.noise();
-    if (!buf) return;
-
-    const t = this.now();
-
-    // The rush.
-    this.engineGain = this.ctx.createGain();
-    this.engineGain.gain.setValueAtTime(0.0001, t);
-    this.engineGain.gain.exponentialRampToValueAtTime(0.04, t + 0.5);
-
-    this.engineFilter = this.ctx.createBiquadFilter();
-    this.engineFilter.type = 'lowpass';
-    // Q stays low deliberately: a resonant peak here is a whistle, which is the
-    // same problem as the saw in a different costume.
-    this.engineFilter.Q.value = 0.6;
-    this.engineFilter.frequency.value = 520;
-
-    this.engineSrc = this.ctx.createBufferSource();
-    this.engineSrc.buffer = buf;
-    this.engineSrc.loop = true;
-    this.engineSrc.connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain).connect(this.sfxBus);
-    this.engineSrc.start(t);
-
-    // A sub hum for weight. Low enough to be felt rather than heard, and quiet
-    // enough that a laptop speaker mostly won't reproduce it at all.
-    this.engineSubGain = this.ctx.createGain();
-    this.engineSubGain.gain.setValueAtTime(0.0001, t);
-    this.engineSubGain.gain.exponentialRampToValueAtTime(0.022, t + 0.6);
-
-    this.engineSub = this.ctx.createOscillator();
-    this.engineSub.type = 'sine';
-    this.engineSub.frequency.value = 46;
-    this.engineSub.connect(this.engineSubGain).connect(this.sfxBus);
-    this.engineSub.start(t);
+    /* Intentionally silent — see the note above. */
   }
 
-  /**
-   * Track the car.
-   *
-   * @param speedRatio current speed over base speed — 1 is cruising, 1.7 is a
-   *                   full boost, below 1 is a stun.
-   * @param stunned    closes the filter right down, so a hit is audible as a
-   *                   sudden loss of air as well as visible.
-   */
-  setEngineSpeed(speedRatio: number, stunned = false) {
-    if (!this.ctx || !this.engineFilter || !this.engineGain) return;
-    const r = Math.max(0.2, Math.min(2.2, speedRatio));
-    const t = this.now();
-
-    // setTargetAtTime rather than a ramp: this is called 60 times a second and
-    // needs to glide, not to schedule 60 competing ramps.
-    this.engineFilter.frequency.setTargetAtTime(stunned ? 240 : 300 + r * 1250, t, 0.09);
-    // Volume rides with speed too — standing still should be near-silent.
-    this.engineGain.gain.setTargetAtTime(stunned ? 0.018 : 0.012 + r * 0.032, t, 0.12);
-    this.engineSub?.frequency.setTargetAtTime(38 + r * 20, t, 0.1);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  setEngineSpeed(_speedRatio: number, _stunned = false) {
+    /* Intentionally silent — see the note above. */
   }
 
+  /** Tear down every sustained sound a race can leave running. */
   stopEngine() {
-    if (!this.ctx) return;
-    const t = this.now();
-
-    for (const g of [this.engineGain, this.engineSubGain]) {
-      if (!g) continue;
-      g.gain.cancelScheduledValues(t);
-      g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
-    }
-
-    try {
-      this.engineSrc?.stop(t + 0.35);
-      this.engineSub?.stop(t + 0.35);
-    } catch {
-      // Already stopped — harmless.
-    }
-
-    this.engineSrc = null;
-    this.engineSub = null;
-    this.engineSubGain = null;
-    this.engineGain = null;
-    this.engineFilter = null;
-
     this.setBoost(false);
   }
 
@@ -522,6 +491,7 @@ export class SoundEngine {
    * clock does not drift at all.
    */
   startMusic() {
+    if (!this.musicEnabled) return;
     if (!this.ensure() || this.musicTimer || !this.ctx) return;
 
     this.musicStep = 0;
@@ -590,12 +560,12 @@ export class SoundEngine {
 
   /** Duck the music under a moment that needs the room — a win, a ticket. */
   duckMusic(seconds = 2) {
-    if (!this.ctx || !this.musicBus) return;
+    if (!this.ctx || !this.musicBus || !this.musicEnabled) return;
     const t = this.now();
     this.musicBus.gain.cancelScheduledValues(t);
     this.musicBus.gain.setValueAtTime(this.musicBus.gain.value, t);
     this.musicBus.gain.linearRampToValueAtTime(0.05, t + 0.15);
-    this.musicBus.gain.linearRampToValueAtTime(0.32, t + seconds);
+    this.musicBus.gain.linearRampToValueAtTime(this.musicEnabled ? MUSIC_LEVEL : 0, t + seconds);
   }
 
   /** Tear everything down. Called when the provider unmounts. */

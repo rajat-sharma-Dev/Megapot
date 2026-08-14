@@ -158,12 +158,23 @@ we fully control is smaller than PixiJS, carries no dependency risk, and is easi
 juice — particles, screen shake, boost flame, floating score popups — lives in an `Fx` bag owned by
 the view, never in the simulation, because the server replays races with no renderer at all.
 
-**Every sound is synthesised at runtime.** There is not one audio file in the repository. A racing
-game needs an engine note that tracks speed and a boost that opens up while held, and a sampled loop
-can't do either without a pile of crossfades. Web Audio gives us a continuously variable engine in a
-few dozen lines, ships nothing, and has no licensing to get wrong. The landing page hero is a real
-race — same engine, same track generator, same renderer — with five bots driving and the camera
-following the leader.
+**Every sound is synthesised at runtime.** There is not one audio file in the repository — Web Audio
+gives us a boost roar that lasts exactly as long as the fuel does, ships nothing, and has no
+licensing to get wrong.
+
+**A race has no background drone, and that took two attempts to learn.** First a sawtooth engine
+note that tracked speed, which was a buzz within a minute. Then filtered noise — a wind rush with no
+fundamental, the textbook fix — which was still irritating. The timbre was never the problem: an
+unbroken sound held under a browser tab for seventy seconds is fatiguing whatever it is made of. So
+the bed is gone, and a race is punctuation over silence — pickups, hits, near misses, steals, the
+orb — which makes each of them land far harder than it did competing with a drone. The only
+sustained sound is the boost roar, which the player chooses and pays fuel for. Effects and music sit
+on separate buses with separate switches, because they wear out at very different rates, and the
+music bed defaults to **off**: a loop that starts uninvited is the fastest way to get an app muted
+wholesale.
+
+The landing page hero is a real race — same engine, same track generator, same renderer — with five
+bots driving and the camera following the leader.
 
 ---
 

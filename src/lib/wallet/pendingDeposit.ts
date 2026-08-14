@@ -65,16 +65,30 @@ export function clearPending(address: string): void {
  */
 export function isTransientDepositError(message: string): boolean {
   const m = message.toLowerCase();
-  if (m.includes('failed to fetch') || m.includes('networkerror') || m.includes('load failed')) {
-    return true;
-  }
-  return (
-    m.includes('not on chain yet') ||
-    m.includes('another confirmation') ||
-    m.includes('timeout') ||
-    m.includes('econnrefused') ||
-    m.includes('fetch failed')
-  );
+  if (!m) return false;
+
+  return [
+    // Every browser words a dropped connection differently, and all of them
+    // reach here as a bare string with no error code to switch on.
+    'failed to fetch',    // Chrome
+    'networkerror',       // Firefox
+    'load failed',        // Safari
+    'network request failed',
+    'fetch failed',       // undici / Node
+    'econnrefused',
+    'econnreset',
+    'socket hang up',
+    // "timeout" does NOT match "the operation timed out", which is the phrasing
+    // both Safari and AbortSignal.timeout actually produce. Matching only the
+    // noun let a routine timeout strand a deposit.
+    'timeout',
+    'timed out',
+    'aborted',
+    // The server's own "not yet" answers. A transaction that hasn't propagated
+    // or confirmed will confirm shortly.
+    'not on chain yet',
+    'another confirmation',
+  ].some((needle) => m.includes(needle));
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

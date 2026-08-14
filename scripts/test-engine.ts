@@ -10,6 +10,7 @@
 import { generateTrack, CELLS_MIN, CELLS_MAX, FUEL_CANS_MIN, FUEL_CANS_MAX } from '../src/lib/game/trackgen';
 import { simulateLobby, emptyInputLog, type InputLog } from '../src/lib/game/replay';
 import type { RaceOutcome } from '../src/lib/game/types';
+import { isTransientDepositError } from '../src/lib/wallet/pendingDeposit';
 import { driveRace, localField } from './lib/drive';
 import {
   scoreRace, orbValue, FINISH_BONUS, CLEAN_RUN_BONUS, PODIUM_BONUS,
@@ -403,6 +404,55 @@ group('The Jackpot Orb only pays if you finish');
   check(
     quitter.total < finisher.total - orbValue(0),
     'so quitting with the Orb is strictly worse than carrying it home',
+  );
+}
+
+// ── Deposit recovery ────────────────────────────────────────────────────────
+group('Deposit failure classification');
+{
+  /**
+   * A deposit is two steps and only the first is irreversible: USDC moves, then
+   * the server is told to look at it. This function decides whether a failure of
+   * the second step is worth retrying. Getting it wrong is expensive in both
+   * directions — too narrow and a "Failed to fetch" strands somebody's money,
+   * too broad and a transaction that will never be valid retries forever behind
+   * a permanent error banner.
+   */
+  const transient = [
+    'Failed to fetch',
+    'TypeError: Failed to fetch',
+    'NetworkError when attempting to fetch resource.',
+    'Load failed',
+    'fetch failed',
+    'That transaction is not on chain yet. Wait for it to confirm and try again.',
+    'That transaction needs another confirmation. Try again in a moment.',
+    'connect ECONNREFUSED 127.0.0.1:3000',
+    'socket hang up',
+    // Phrased as "timed out", not "timeout" — matching only the noun let a
+    // routine Safari/AbortSignal timeout strand a deposit.
+    'The operation timed out',
+    'signal timed out',
+    'The user aborted a request.',
+  ];
+  const permanent = [
+    'That transaction reverted on chain, so nothing was transferred.',
+    'No USDC transfer from 0xabc to the treasury was found in that transaction.',
+    'That is not a valid transaction hash.',
+    'Deposits are not configured on this deployment — no treasury address is set.',
+  ];
+
+  check(
+    transient.every((m) => isTransientDepositError(m)),
+    `all ${transient.length} recoverable failures retry — including the browser's bare "Failed to fetch"`,
+  );
+  check(
+    permanent.every((m) => !isTransientDepositError(m)),
+    `all ${permanent.length} terminal failures stop, rather than retrying a hash that will never be valid`,
+  );
+  check(!isTransientDepositError(''), 'an empty message is treated as terminal, not retried blindly');
+  check(
+    isTransientDepositError('FAILED TO FETCH'),
+    'classification is case-insensitive — browsers disagree on the casing',
   );
 }
 

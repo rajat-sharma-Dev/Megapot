@@ -202,6 +202,9 @@ async function main() {
       RALLY_DEV_FAUCET: 'true',
       RALLY_FILL_WINDOW_MS: String(FILL_WINDOW_MS),
       RALLY_SUBMIT_WINDOW_MS: '30000',
+      // Set so the referral sweep exercises its 401 path rather than its
+      // "feature disabled" 404. The suite never sends the correct value.
+      RALLY_ADMIN_SECRET: 'e2e-secret-never-sent',
       NODE_ENV: 'production',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -423,7 +426,10 @@ async function main() {
     let sawFirstNotWinner = false;
     let races = 0;
 
-    for (let i = 0; i < 6 && !(sawWinnerNotFirst && sawFirstNotWinner); i++) {
+    // Bounded at 10 rather than 6 for headroom: this needs at least one race
+    // where the top scorer was not first across the line, which is common but
+    // not guaranteed in any given handful.
+    for (let i = 0; i < 10 && !(sawWinnerNotFirst && sawFirstNotWinner); i++) {
       const r = await playRace(PLAYER, 'Tester', { skill: i % 2 ? 'sharp' : 'steady' });
       races++;
       const st = r.settlement;
@@ -572,15 +578,31 @@ async function main() {
   // ── Shards → a real ticket ───────────────────────────────────────────────
   group('Shards convert into a real Megapot ticket');
   {
-    // A win in a fully-staked lobby is five shards, which is a whole ticket, so
-    // it should mint on the spot. Play until one lands.
+    /**
+     * A win in a fully-staked lobby is five shards, which is a whole ticket, so
+     * it should mint on the spot. Play until one lands.
+     *
+     * Two things here are load bearing, because the first version of this check
+     * failed roughly one run in nine for no reason at all:
+     *
+     *  · The bound is 20, not 10. Against four house seats an evenly-matched
+     *    player wins about one race in five, so ten attempts leave a ~11% chance
+     *    of a spurious failure. Twenty puts it near 1%.
+     *  · The stand-in drives 'rookie', which sounds wrong and is not. The bot
+     *    ladder is tuned for SAFETY, not score — measured over 80 races each,
+     *    rookie averages 160 points, steady 145 and sharp 132, because caution
+     *    keeps a racer away from the pickup lines. This test wants the profile
+     *    that scores highest, and that is rookie.
+     */
     let won: Json = null;
-    for (let i = 0; i < 10 && !won; i++) {
-      const r = await playRace(PLAYER, 'Tester', { skill: 'sharp' });
+    let attempts = 0;
+    for (let i = 0; i < 20 && !won; i++) {
+      attempts++;
+      const r = await playRace(PLAYER, 'Tester', { skill: 'rookie' });
       if (r.settlement?.winnerSeat === r.lobby.mySeat) won = r;
     }
 
-    check(!!won, 'the player took a pot within ten races');
+    check(!!won, `the player took a pot within ${attempts} race${attempts === 1 ? '' : 's'}`);
 
     if (won) {
       const st = won.settlement;
@@ -724,16 +746,178 @@ async function main() {
     check(BigInt(profile.balance.creditsUnits) < entryFeeUnits, 'with a balance below one entry fee');
   }
 
+  // ── The high score feed ──────────────────────────────────────────────────
+  group('High score feed');
+  {
+    const { status, json } = await api('GET', '/api/recent');
+    check(status === 200 && json?.ok, 'GET /api/recent responds');
+
+    if (json?.ok) {
+      check(Array.isArray(json.winners), 'it returns a winners array');
+      check(json.winners.length > 0, `${json.winners.length} settled races on the board`);
+      check(
+        json.winners.every((w: Json) => typeof w.name === 'string' && w.name.length > 0),
+        'every row names a winner',
+      );
+      check(
+        json.winners.every((w: Json) => typeof w.isHouse === 'boolean'),
+        'and says whether it was the house — a board of only human wins would misstate the odds',
+      );
+      check(
+        json.winners.some((w: Json) => w.isHouse) || json.totals.humanWins === json.winners.length,
+        'house victories are included rather than filtered out',
+      );
+      check(
+        json.winners.every((w: Json) => w.points > 0),
+        'a winner always scored above zero (a refunded race has no winner)',
+      );
+      check(
+        json.winners.every((w: Json) => w.wonFromBehind === w.placement > 1),
+        'the from-behind flag agrees with the finish position it reports',
+      );
+      check(json.totals.ticketsMinted >= 1, `${json.totals.ticketsMinted} tickets across the board`);
+      check(BigInt(json.totals.potUnits) > 0n, 'and the staked total is accounted for');
+      check(
+        json.winners.every((w: Json) => !('id' in w) && !('address' in w)),
+        'no wallet address is exposed on a public board',
+      );
+    }
+  }
+
+  // ── Winning tickets and claiming ─────────────────────────────────────────
+  group('Winning tickets');
+  {
+    check(
+      (await api('GET', '/api/wins?address=nope')).status === 400,
+      'the wins route rejects a bad address',
+    );
+
+    const { status, json } = await api('GET', `/api/wins?address=${PLAYER}`);
+    check(status === 200 && json?.ok, 'GET /api/wins responds for a real wallet');
+
+    if (json?.ok) {
+      check(Array.isArray(json.wins), 'it returns a wins array');
+      check(
+        Array.isArray(json.claimableTicketIds),
+        'and the exact uint256[] that claimWinnings takes',
+      );
+      check(
+        json.claimableTicketIds.length === json.wins.filter((r: Json) => !r.claimed).length,
+        'claimable ids are precisely the unclaimed wins — never one already redeemed',
+      );
+      check(
+        /^0x[a-fA-F0-9]{40}$/.test(json.jackpotAddress),
+        'it hands back the Jackpot address the claim must be sent to',
+      );
+      check(
+        typeof json.unclaimedUnits === 'string' && /^\d+$/.test(json.unclaimedUnits),
+        'amounts are integer base units, never floats',
+      );
+      // The testnet Data API is not always reachable. Degrading to "no wins"
+      // is correct; throwing a 500 at a player checking their winnings is not.
+      check(
+        json.apiError === null || json.wins.length === 0,
+        json.apiError
+          ? `an unreachable Data API degrades to an empty board (${json.apiError})`
+          : 'the Data API was reachable',
+      );
+    }
+  }
+
+  // ── Referral revenue ─────────────────────────────────────────────────────
+  group('Referral revenue');
+  {
+    const { status, json } = await api('GET', '/api/admin/referral');
+    check(status === 200 && json?.ok, 'GET /api/admin/referral reports without auth (read-only)');
+
+    if (json?.ok && json.configured) {
+      check(/^0x[a-fA-F0-9]{40}$/.test(json.account), `fees accrue to ${json.account}`);
+      check(/^\d+$/.test(json.owedUnits), `${json.owedUnits} base units accrued so far`);
+      check(
+        json.referralFeePct > 0 && json.referralWinSharePct > 0,
+        `live rates read from chain: ${json.referralFeePct}% of ticket, ${json.referralWinSharePct}% of winnings`,
+      );
+      check(
+        json.claimable === (BigInt(json.owedUnits) > 0n),
+        'the claimable flag agrees with the accrued balance',
+      );
+    } else if (json?.ok) {
+      check(json.configured === false, 'or says plainly that no referrer is configured');
+    }
+
+    // The sweep moves money, so it is gated. Deliberately never POSTed with the
+    // correct secret here: that would broadcast a real transaction from a
+    // shared testnet key.
+    const noAuth = await api('POST', '/api/admin/referral', {});
+    check(
+      noAuth.status === 401 || noAuth.status === 404,
+      `sweeping without the secret is refused (${noAuth.status})`,
+    );
+
+    const badAuth = await fetch(`${BASE}/api/admin/referral`, {
+      method: 'POST',
+      headers: { 'x-admin-secret': 'not-the-secret' },
+    });
+    check(
+      badAuth.status === 401 || badAuth.status === 404,
+      'and a wrong secret is refused too',
+    );
+  }
+
   // ── Pages render ─────────────────────────────────────────────────────────
   group('Pages');
-  for (const [route, marker] of [
-    ['/', 'Press Start'],
-    ['/play', 'Rally'],
-    ['/vault', 'Rally'],
-  ] as const) {
-    const res = await fetch(`${BASE}${route}`);
-    const html = await res.text();
-    check(res.ok && html.includes(marker), `${route} renders (200, contains "${marker}")`);
+  {
+    for (const [route, markers] of [
+      // The attract screen: the cabinet chrome, the one control, and the
+      // fold-independent content all have to be in the server-rendered HTML.
+      ['/', ['Press Start', 'CABINET 01', 'SPECIFICATION', 'marquee-track']],
+      ['/play', ['Rally']],
+      ['/vault', ['Rally']],
+    ] as const) {
+      const res = await fetch(`${BASE}${route}`);
+      const html = await res.text();
+      const missing = markers.filter((m) => !html.includes(m));
+      check(
+        res.ok && missing.length === 0,
+        missing.length
+          ? `${route} renders but is missing ${missing.join(', ')}`
+          : `${route} renders (200, contains ${markers.map((m) => `"${m}"`).join(', ')})`,
+      );
+    }
+
+    // Scrolling is a layout property, but the two rules that broke it are
+    // assertable from the stylesheet — and they broke every page at once.
+    const html = await (await fetch(`${BASE}/`)).text();
+    const cssHref = html.match(/\/_next\/static\/css\/[^"]+\.css/)?.[0];
+    check(!!cssHref, 'the stylesheet is linked');
+
+    if (cssHref) {
+      const css = await (await fetch(`${BASE}${cssHref}`)).text();
+      check(
+        !/html,\s*body\s*\{[^}]*overflow-x:\s*hidden/.test(css),
+        'the root element has no overflow rule — that is what nested the scroll containers',
+      );
+      check(
+        !/body\s*\{[^}]*overscroll-behavior-y:\s*none/.test(css),
+        'and body does not suppress overscroll document-wide',
+      );
+      // Whitespace-tolerant: the production build minifies this to
+      // `overflow-x:clip`, so an exact-string match passes in dev and fails here.
+      check(
+        /overflow-x:\s*clip/.test(css),
+        'body clips horizontally without becoming a scroller',
+      );
+    }
+
+    const viewport = html.match(/<meta name="viewport" content="([^"]*)"/)?.[1] ?? '';
+    check(
+      viewport.includes('width=device-width'),
+      `the viewport keeps width=device-width ("${viewport}")`,
+    );
+    check(
+      !viewport.includes('user-scalable=no'),
+      'and does not disable pinch zoom for the whole app',
+    );
   }
 }
 
